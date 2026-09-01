@@ -2,13 +2,16 @@
 
 import { useParams } from "next/navigation";
 import Link from "next/link";
+import { useState } from "react";
 import { useStore } from "@/lib/store";
 import { ReceiptDocument } from "@/components/documents";
 
 export default function ReceiptDetail() {
   const { id } = useParams<{ id: string }>();
-  const { getReceipt, company, ready } = useStore();
+  const { getReceipt, company, sendReceipt, ready } = useStore();
   const receipt = getReceipt(id);
+  const [sending, setSending] = useState(false);
+  const [sendMsg, setSendMsg] = useState<{ ok: boolean; text: string } | null>(null);
 
   if (ready && !receipt) {
     return (
@@ -21,6 +24,22 @@ export default function ReceiptDetail() {
     );
   }
   if (!receipt) return <div className="p-10 text-sm text-fg-dim">Loading…</div>;
+
+  const handleSend = async () => {
+    if (!receipt.to.email) {
+      setSendMsg({ ok: false, text: "This receipt has no client email." });
+      return;
+    }
+    setSending(true);
+    setSendMsg(null);
+    const result = await sendReceipt(receipt.id);
+    setSending(false);
+    setSendMsg(
+      result.ok
+        ? { ok: true, text: `Sent to ${receipt.to.email}` }
+        : { ok: false, text: result.error ?? "Failed to send." }
+    );
+  };
 
   return (
     <div className="mx-auto max-w-[1180px]">
@@ -39,6 +58,13 @@ export default function ReceiptDetail() {
             View invoice {receipt.invoiceNumber}
           </Link>
           <button
+            onClick={handleSend}
+            disabled={sending}
+            className="rounded-xl border border-black/10 bg-black/5 px-4 py-2.5 text-sm font-medium text-fg transition hover:bg-black/10 disabled:opacity-50"
+          >
+            {sending ? "Sending…" : "✉ Email to client"}
+          </button>
+          <button
             onClick={() => window.print()}
             className="rounded-xl px-4 py-2.5 text-sm font-semibold text-white transition tri-bg hover:opacity-90 glow"
           >
@@ -46,6 +72,19 @@ export default function ReceiptDetail() {
           </button>
         </div>
       </div>
+
+      {sendMsg && (
+        <div
+          className={`no-print mb-4 rounded-xl border px-4 py-2.5 text-sm ${
+            sendMsg.ok
+              ? "border-[#0f9d63]/30 bg-[#0f9d63]/10 text-[#0f9d63]"
+              : "border-[#f43f6e]/30 bg-[#f43f6e]/10 text-[#f43f6e]"
+          }`}
+        >
+          {sendMsg.ok ? "✓ " : "⚠ "}
+          {sendMsg.text}
+        </div>
+      )}
 
       <ReceiptDocument receipt={receipt} company={company} />
     </div>

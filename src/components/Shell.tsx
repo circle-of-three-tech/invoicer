@@ -78,7 +78,7 @@ export function Shell({ children }: { children: React.ReactNode }) {
         <div className="rounded-2xl border border-black/[0.07] bg-black/[0.02] p-4">
           <div className="mb-1 text-xs font-semibold text-fg">Circle of Three</div>
           <p className="text-[11px] leading-relaxed text-fg-dim">
-            Invoices & receipts, beautifully in sync. All data lives in your browser.
+            Invoices & receipts, beautifully in sync. Saved to your database and emailed to clients.
           </p>
         </div>
       </aside>

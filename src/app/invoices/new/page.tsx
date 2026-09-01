@@ -63,9 +63,9 @@ function Builder() {
   const removeItem = (id: string) =>
     setInv({ ...inv, items: inv.items.filter((it) => it.id !== id) });
 
-  const save = (status: Invoice["status"]) => {
+  const save = async (status: Invoice["status"]) => {
     const toSave = { ...inv, status };
-    upsertInvoice(toSave);
+    await upsertInvoice(toSave);
     router.push(`/invoices/${toSave.id}`);
   };
 

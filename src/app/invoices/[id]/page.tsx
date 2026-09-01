@@ -23,9 +23,12 @@ const METHODS: PaymentMethod[] = [
 export default function InvoiceDetail() {
   const { id } = useParams<{ id: string }>();
   const router = useRouter();
-  const { getInvoice, company, deleteInvoice, createReceipt, ready } = useStore();
+  const { getInvoice, company, deleteInvoice, createReceipt, sendInvoice, ready } =
+    useStore();
   const inv = getInvoice(id);
   const [payOpen, setPayOpen] = useState(false);
+  const [sending, setSending] = useState(false);
+  const [sendMsg, setSendMsg] = useState<{ ok: boolean; text: string } | null>(null);
 
   if (ready && !inv) {
     return (
@@ -46,6 +49,22 @@ export default function InvoiceDetail() {
       deleteInvoice(inv.id);
       router.push("/invoices");
     }
+  };
+
+  const handleSend = async () => {
+    if (!inv.to.email) {
+      setSendMsg({ ok: false, text: "Add a client email before sending." });
+      return;
+    }
+    setSending(true);
+    setSendMsg(null);
+    const result = await sendInvoice(inv.id);
+    setSending(false);
+    setSendMsg(
+      result.ok
+        ? { ok: true, text: `Sent to ${inv.to.email}` }
+        : { ok: false, text: result.error ?? "Failed to send." }
+    );
   };
 
   return (
@@ -80,6 +99,13 @@ export default function InvoiceDetail() {
             )
           )}
           <button
+            onClick={handleSend}
+            disabled={sending}
+            className="rounded-xl border border-black/10 bg-black/5 px-4 py-2.5 text-sm font-medium text-fg transition hover:bg-black/10 disabled:opacity-50"
+          >
+            {sending ? "Sending…" : "✉ Email to client"}
+          </button>
+          <button
             onClick={() => window.print()}
             className="rounded-xl border border-black/10 bg-black/5 px-4 py-2.5 text-sm font-medium text-fg transition hover:bg-black/10"
           >
@@ -101,6 +127,19 @@ export default function InvoiceDetail() {
         </div>
       </div>
 
+      {sendMsg && (
+        <div
+          className={`no-print mb-4 rounded-xl border px-4 py-2.5 text-sm ${
+            sendMsg.ok
+              ? "border-[#0f9d63]/30 bg-[#0f9d63]/10 text-[#0f9d63]"
+              : "border-[#f43f6e]/30 bg-[#f43f6e]/10 text-[#f43f6e]"
+          }`}
+        >
+          {sendMsg.ok ? "✓ " : "⚠ "}
+          {sendMsg.text}
+        </div>
+      )}
+
       <InvoiceDocument invoice={inv} logoDataUrl={company.logoDataUrl} />
 
       <AnimatePresence>
@@ -109,8 +148,8 @@ export default function InvoiceDetail() {
             defaultAmount={t.total}
             currency={inv.currency}
             onClose={() => setPayOpen(false)}
-            onConfirm={(data) => {
-              const r = createReceipt(inv.id, data);
+            onConfirm={async (data) => {
+              const r = await createReceipt(inv.id, data);
               setPayOpen(false);
               if (r) router.push(`/receipts/${r.id}`);
             }}
