@@ -4,6 +4,7 @@ import { useParams } from "next/navigation";
 import Link from "next/link";
 import { useState } from "react";
 import { useStore } from "@/lib/store";
+import { formatDate } from "@/lib/format";
 import { ReceiptDocument } from "@/components/documents";
 
 export default function ReceiptDetail() {
@@ -49,6 +50,11 @@ export default function ReceiptDetail() {
             ← Receipts
           </Link>
           <h1 className="mt-1 font-display text-2xl font-bold text-fg">{receipt.number}</h1>
+          {receipt.sentAt && (
+            <p className="mt-1 text-[11px] text-fg-dim">
+              Emailed to {receipt.to.email} on {formatDate(receipt.sentAt)}
+            </p>
+          )}
         </div>
         <div className="flex gap-2">
           <Link

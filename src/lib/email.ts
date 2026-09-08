@@ -1,34 +1,55 @@
 import "server-only";
 import nodemailer from "nodemailer";
+import type { Transporter } from "nodemailer";
 import type { Company, Invoice, Receipt } from "./types";
+import { smtpConfig } from "./env";
 import { formatDate, lineTotal, money, totals } from "./format";
+import { isEmailAddress } from "./validate";
 
 /* -------------------------------------------------------------------------- */
-/*  SMTP transport (configured via env — see .env.local / README)              */
+/*  SMTP transport (configured via env — see .env.example / README)            */
 /* -------------------------------------------------------------------------- */
 
-function getTransport() {
-  const host = process.env.SMTP_HOST;
-  const port = Number(process.env.SMTP_PORT || 587);
-  const user = process.env.SMTP_USER;
-  const pass = process.env.SMTP_PASS;
+// Creating a transport opens a TLS handshake, so it is built once and reused.
+// Fluid Compute keeps instances warm, which makes a pooled connection the
+// difference between ~1s and ~50ms on repeat sends.
+const globalForMail = globalThis as unknown as {
+  mailTransport?: Transporter | null;
+};
 
-  if (!host || !user || !pass) return null;
+function getTransport(): Transporter | null {
+  if (globalForMail.mailTransport !== undefined) return globalForMail.mailTransport;
 
-  return nodemailer.createTransport({
+  const { host, port, user, pass, secure } = smtpConfig();
+  if (!host || !user || !pass) {
+    globalForMail.mailTransport = null;
+    return null;
+  }
+
+  globalForMail.mailTransport = nodemailer.createTransport({
     host,
     port,
     // Port 465 is implicit TLS; 587/other use STARTTLS. Allow an override.
-    secure: process.env.SMTP_SECURE
-      ? process.env.SMTP_SECURE === "true"
-      : port === 465,
+    secure,
     auth: { user, pass },
+    pool: true,
+    maxConnections: 2,
+    // Without these a hung SMTP server would hold the function open until the
+    // platform timeout, turning one bad send into a stuck request.
+    connectionTimeout: 10_000,
+    greetingTimeout: 10_000,
+    socketTimeout: 20_000,
   });
+  return globalForMail.mailTransport;
 }
 
 function fromAddress(company: Company) {
-  const email = process.env.MAIL_FROM || process.env.SMTP_USER || company.email;
-  return `"${company.name}" <${email}>`;
+  const { from, user } = smtpConfig();
+  const email = from || user || company.email;
+  // The display name lands inside a quoted string, so strip characters that
+  // would terminate it or inject an extra header.
+  const name = company.name.replace(/["\\\r\n]/g, " ").trim();
+  return `"${name}" <${email}>`;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -182,15 +203,15 @@ type SendArgs =
   | { kind: "invoice"; invoice: Invoice; company: Company }
   | { kind: "receipt"; receipt: Receipt; company: Company };
 
-export async function sendDocumentEmail(
-  args: SendArgs,
-): Promise<{ ok: boolean; error?: string }> {
+export type SendOutcome = { ok: true } | { ok: false; error: string };
+
+export async function sendDocumentEmail(args: SendArgs): Promise<SendOutcome> {
   const transport = getTransport();
   if (!transport) {
     return {
       ok: false,
       error:
-        "Email is not configured. Set SMTP_HOST, SMTP_USER and SMTP_PASS in .env.local.",
+        "Email is not configured. Set SMTP_HOST, SMTP_USER and SMTP_PASS.",
     };
   }
 
@@ -210,18 +231,39 @@ export async function sendDocumentEmail(
     html = receiptHtml(args.receipt, args.company, accent);
   }
 
+  if (!isEmailAddress(to)) {
+    return { ok: false, error: "The client email address is not valid." };
+  }
+
   try {
     await transport.sendMail({
       from: fromAddress(args.company),
       to,
       subject,
       html,
+      // A plain-text part keeps the message out of spam filters that penalise
+      // HTML-only mail, and gives text-mode clients something to show.
+      text: htmlToText(html),
     });
     return { ok: true };
   } catch (err) {
-    return {
-      ok: false,
-      error: err instanceof Error ? err.message : "Failed to send email.",
-    };
+    console.error("[email] send failed", err);
+    // SMTP errors can name the host and credentials, so keep them server-side.
+    return { ok: false, error: "The email could not be sent. Check the SMTP settings." };
   }
+}
+
+/** A readable text/plain fallback derived from the HTML body. */
+function htmlToText(html: string): string {
+  return html
+    .replace(/<style[\s\S]*?<\/style>/gi, "")
+    .replace(/<\/(tr|div|p|table|h[1-6])>/gi, "\n")
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/[ \t]+/g, " ")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
 }

@@ -1,6 +1,6 @@
 "use client";
 
-import { Suspense, useEffect, useState } from "react";
+import { Suspense, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { AnimatePresence, motion } from "framer-motion";
@@ -20,28 +20,25 @@ export default function NewInvoicePage() {
 }
 
 function Builder() {
-  const { blankInvoice, upsertInvoice, getInvoice, company, ready } = useStore();
+  const { blankInvoice, upsertInvoice, getInvoice, company } = useStore();
   const router = useRouter();
   const params = useSearchParams();
   const editId = params.get("id");
 
-  const [inv, setInv] = useState<Invoice | null>(null);
+  // The store is populated by the server render, so the right invoice is known
+  // on the very first pass — no effect, no "preparing…" placeholder.
+  const load = () => (editId ? getInvoice(editId) : undefined) ?? blankInvoice();
 
-  useEffect(() => {
-    if (!ready) return;
-    if (editId) {
-      const existing = getInvoice(editId);
-      if (existing) {
-        setInv(existing);
-        return;
-      }
-    }
-    setInv((cur) => cur ?? blankInvoice());
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ready, editId]);
+  const [inv, setInv] = useState<Invoice>(load);
+  const [loadedId, setLoadedId] = useState(editId);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
-  if (!inv) {
-    return <div className="p-10 text-sm text-fg-dim">Preparing your invoice…</div>;
+  // Switching between "new" and "edit" without unmounting: re-derive during
+  // render rather than in an effect, which would render the stale invoice once.
+  if (loadedId !== editId) {
+    setLoadedId(editId);
+    setInv(load());
   }
 
   const set = (patch: Partial<Invoice>) => setInv({ ...inv, ...patch });
@@ -64,9 +61,16 @@ function Builder() {
     setInv({ ...inv, items: inv.items.filter((it) => it.id !== id) });
 
   const save = async (status: Invoice["status"]) => {
-    const toSave = { ...inv, status };
-    await upsertInvoice(toSave);
-    router.push(`/invoices/${toSave.id}`);
+    if (saving) return;
+    setSaving(true);
+    setError(null);
+    const result = await upsertInvoice({ ...inv, status });
+    setSaving(false);
+    if (result.ok) {
+      router.push(`/invoices/${inv.id}`);
+    } else {
+      setError(result.error ?? "Could not save this invoice.");
+    }
   };
 
   const t = totals(inv);
@@ -85,18 +89,29 @@ function Builder() {
         <div className="flex gap-2">
           <button
             onClick={() => save("draft")}
-            className="rounded-xl border border-black/10 bg-black/5 px-4 py-2.5 text-sm font-medium text-fg transition hover:bg-black/10"
+            disabled={saving}
+            className="rounded-xl border border-black/10 bg-black/5 px-4 py-2.5 text-sm font-medium text-fg transition hover:bg-black/10 disabled:opacity-50"
           >
             Save draft
           </button>
           <button
             onClick={() => save("sent")}
-            className="rounded-xl px-4 py-2.5 text-sm font-semibold text-white transition tri-bg hover:opacity-90 glow"
+            disabled={saving}
+            className="rounded-xl px-4 py-2.5 text-sm font-semibold text-white transition tri-bg hover:opacity-90 disabled:opacity-50 glow"
           >
-            Save & finalize →
+            {saving ? "Saving…" : "Save & finalize →"}
           </button>
         </div>
       </div>
+
+      {error && (
+        <p
+          role="alert"
+          className="mb-5 rounded-xl border border-[#f43f6e]/30 bg-[#f43f6e]/10 px-4 py-2.5 text-sm text-[#f43f6e]"
+        >
+          ⚠ {error}
+        </p>
+      )}
 
       <div className="grid grid-cols-1 gap-8 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.05fr)]">
         {/* FORM */}

@@ -9,12 +9,37 @@ export function currencySymbol(code: string) {
   return CURRENCIES[code]?.symbol ?? code + " ";
 }
 
+/**
+ * Documents render on the server and hydrate on the client, so formatting must
+ * be pinned to one locale. Left to the runtime default, Node would produce
+ * "4,020.50 / Sep 15, 2026" while a German or British browser produced
+ * "4.020,50 / 15. Sept. 2026" — a hydration mismatch on every invoice.
+ */
+const LOCALE = "en-US";
+
+// Constructing an `Intl` formatter is expensive relative to using one, and a
+// long invoice formats every rate, line total and date. Build each once.
+const moneyFormatter = new Intl.NumberFormat(LOCALE, {
+  minimumFractionDigits: 2,
+  maximumFractionDigits: 2,
+});
+
+const countFormatter = new Intl.NumberFormat(LOCALE);
+
+const dateFormatter = new Intl.DateTimeFormat(LOCALE, {
+  year: "numeric",
+  month: "short",
+  day: "numeric",
+});
+
 export function money(amount: number, currency = "USD") {
   const value = Number.isFinite(amount) ? amount : 0;
-  return `${currencySymbol(currency)}${value.toLocaleString(undefined, {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  })}`;
+  return `${currencySymbol(currency)}${moneyFormatter.format(value)}`;
+}
+
+/** Whole-number formatting that matches `money`'s locale. */
+export function count(value: number) {
+  return countFormatter.format(Math.round(value));
 }
 
 export function lineTotal(item: LineItem) {
@@ -38,11 +63,7 @@ export function formatDate(iso: string) {
   if (!iso) return "—";
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return "—";
-  return d.toLocaleDateString(undefined, {
-    year: "numeric",
-    month: "short",
-    day: "numeric",
-  });
+  return dateFormatter.format(d);
 }
 
 export function todayISO() {
@@ -61,14 +82,24 @@ export function uid() {
   ).toUpperCase();
 }
 
+/** The `PREFIX-YYYY-` stem that this year's document numbers share. */
+export function numberPrefix(prefix: string, year = new Date().getFullYear()) {
+  return `${prefix}-${year}-`;
+}
+
+/**
+ * The next number in the `PREFIX-YYYY-NNNN` series.
+ *
+ * Only the counters from the current year are considered, so a hand-edited
+ * number from a previous year cannot drag the sequence along with it.
+ */
 export function nextNumber(prefix: string, existing: string[]) {
   const year = new Date().getFullYear();
-  const nums = existing
-    .map((n) => {
-      const m = n.match(/(\d+)$/);
-      return m ? parseInt(m[1], 10) : 0;
-    })
-    .filter((n) => Number.isFinite(n));
-  const max = nums.length ? Math.max(...nums) : 0;
-  return `${prefix}-${year}-${String(max + 1).padStart(4, "0")}`;
+  const stem = numberPrefix(prefix, year);
+  const max = existing.reduce((highest, candidate) => {
+    if (!candidate.startsWith(stem)) return highest;
+    const parsed = parseInt(candidate.slice(stem.length), 10);
+    return Number.isFinite(parsed) && parsed > highest ? parsed : highest;
+  }, 0);
+  return `${stem}${String(max + 1).padStart(4, "0")}`;
 }

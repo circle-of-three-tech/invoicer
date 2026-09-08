@@ -1,96 +1,96 @@
 "use client";
 
-import {
-  createContext,
-  useCallback,
-  useContext,
-  useEffect,
-  useMemo,
-  useState,
-} from "react";
-import type { Company, Invoice, Receipt } from "./types";
+import { createContext, useCallback, useContext, useMemo, useState } from "react";
+import type { Company, Invoice, Receipt, Snapshot } from "./types";
 import { addDaysISO, nextNumber, todayISO, uid } from "./format";
 import * as api from "./actions";
-import type { SendResult } from "./actions";
 
-type StoreShape = {
-  company: Company;
-  invoices: Invoice[];
-  receipts: Receipt[];
-};
+/**
+ * Client-side cache of the workspace.
+ *
+ * The initial state arrives from the server render, so there is no load
+ * waterfall and no empty first paint. Mutations apply optimistically and roll
+ * back if the server rejects them, so the UI can never drift silently out of
+ * sync with the database.
+ */
 
-// Placeholder used only for the first server render / before the DB responds.
-// The authoritative company profile is loaded from Postgres on mount.
-const DEFAULT_COMPANY: Company = {
-  name: "Circle of Three Technologies",
-  email: "circleofthreetechnologies@gmail.com",
-  phone: "+1 (000) 000-0000",
-  address: "123 Innovation Way\nTech City",
-  taxId: "",
-  currency: "USD",
-  accent: "iris",
-};
+type StoreShape = Snapshot;
+
+export type Result = { ok: boolean; error?: string };
 
 type StoreCtx = {
+  /** Retained for call-site compatibility; data is present from first render. */
   ready: boolean;
+  /** Whether this deployment permits the destructive demo reset. */
+  demoEnabled: boolean;
   company: Company;
   invoices: Invoice[];
   receipts: Receipt[];
-  saveCompany: (c: Company) => Promise<void>;
+  saveCompany: (c: Company) => Promise<Result>;
   blankInvoice: () => Invoice;
-  upsertInvoice: (inv: Invoice) => Promise<void>;
-  deleteInvoice: (id: string) => Promise<void>;
+  upsertInvoice: (inv: Invoice) => Promise<Result & { invoice?: Invoice }>;
+  deleteInvoice: (id: string) => Promise<Result>;
   getInvoice: (id: string) => Invoice | undefined;
   getReceipt: (id: string) => Receipt | undefined;
   createReceipt: (
     invoiceId: string,
-    data: Pick<Receipt, "amount" | "method" | "reference" | "paidAt">
-  ) => Promise<Receipt | undefined>;
-  sendInvoice: (id: string) => Promise<SendResult>;
-  sendReceipt: (id: string) => Promise<SendResult>;
-  resetDemo: () => Promise<void>;
+    data: Pick<Receipt, "amount" | "method" | "reference" | "paidAt">,
+  ) => Promise<Result & { receipt?: Receipt }>;
+  sendInvoice: (id: string) => Promise<Result>;
+  sendReceipt: (id: string) => Promise<Result>;
+  resetDemo: () => Promise<Result & { snapshot?: Snapshot }>;
 };
 
 const Ctx = createContext<StoreCtx | null>(null);
 
-export function StoreProvider({ children }: { children: React.ReactNode }) {
-  const [state, setState] = useState<StoreShape>({
-    company: DEFAULT_COMPANY,
-    invoices: [],
-    receipts: [],
-  });
-  const [ready, setReady] = useState(false);
+/** Turns a rejected action or a network failure into a displayable message. */
+function toError(error: unknown): Result {
+  console.error("[store]", error);
+  return { ok: false, error: "Could not reach the server. Please try again." };
+}
 
-  useEffect(() => {
-    let active = true;
-    api
-      .bootstrap()
-      .then((data) => {
-        if (!active) return;
-        setState(data);
-        setReady(true);
-      })
-      .catch((err) => {
-        console.error("Failed to load data from the database", err);
-        if (active) setReady(true);
-      });
-    return () => {
-      active = false;
-    };
-  }, []);
+export function StoreProvider({
+  initial,
+  demoEnabled = false,
+  children,
+}: {
+  initial: Snapshot;
+  demoEnabled?: boolean;
+  children: React.ReactNode;
+}) {
+  const [state, setState] = useState<StoreShape>(initial);
 
-  const saveCompany = useCallback(async (company: Company) => {
-    setState((s) => ({ ...s, company })); // optimistic
-    await api.saveCompany(company);
+  const saveCompany = useCallback(async (company: Company): Promise<Result> => {
+    let previous: Company | undefined;
+    setState((s) => {
+      previous = s.company;
+      return { ...s, company };
+    });
+    try {
+      const result = await api.saveCompany(company);
+      if (!result.ok && previous) {
+        const rollback = previous;
+        setState((s) => ({ ...s, company: rollback }));
+      }
+      return result;
+    } catch (error) {
+      if (previous) {
+        const rollback = previous;
+        setState((s) => ({ ...s, company: rollback }));
+      }
+      return toError(error);
+    }
   }, []);
 
   const blankInvoice = useCallback((): Invoice => {
     const now = new Date().toISOString();
     return {
       id: uid(),
+      // A provisional number: the server reassigns it if another tab claimed
+      // the same one first, and hands the final value back on save.
       number: nextNumber(
         "INV",
-        state.invoices.map((i) => i.number)
+        state.invoices.map((i) => i.number),
       ),
       status: "draft",
       issueDate: todayISO(),
@@ -112,72 +112,151 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     };
   }, [state.invoices, state.company]);
 
-  const upsertInvoice = useCallback(async (inv: Invoice) => {
+  const upsertInvoice = useCallback<StoreCtx["upsertInvoice"]>(async (inv) => {
+    let previous: Invoice[] = [];
     setState((s) => {
+      previous = s.invoices;
       const exists = s.invoices.some((i) => i.id === inv.id);
-      const invoices = exists
-        ? s.invoices.map((i) => (i.id === inv.id ? inv : i))
-        : [inv, ...s.invoices];
-      return { ...s, invoices };
+      return {
+        ...s,
+        invoices: exists
+          ? s.invoices.map((i) => (i.id === inv.id ? inv : i))
+          : [inv, ...s.invoices],
+      };
     });
-    await api.saveInvoice(inv);
+
+    try {
+      const result = await api.saveInvoice(inv);
+      if (!result.ok) {
+        setState((s) => ({ ...s, invoices: previous }));
+        return result;
+      }
+      // The server is authoritative about the number it actually stored.
+      const saved = result.data;
+      setState((s) => ({
+        ...s,
+        invoices: s.invoices.map((i) => (i.id === saved.id ? saved : i)),
+      }));
+      return { ok: true, invoice: saved };
+    } catch (error) {
+      setState((s) => ({ ...s, invoices: previous }));
+      return toError(error);
+    }
   }, []);
 
-  const deleteInvoice = useCallback(async (id: string) => {
-    setState((s) => ({
-      ...s,
-      invoices: s.invoices.filter((i) => i.id !== id),
-      receipts: s.receipts.filter((r) => r.invoiceId !== id),
-    }));
-    await api.deleteInvoice(id);
+  const deleteInvoice = useCallback<StoreCtx["deleteInvoice"]>(async (id) => {
+    let previous: StoreShape | undefined;
+    setState((s) => {
+      previous = s;
+      return {
+        ...s,
+        invoices: s.invoices.filter((i) => i.id !== id),
+        receipts: s.receipts.filter((r) => r.invoiceId !== id),
+      };
+    });
+
+    try {
+      const result = await api.deleteInvoice(id);
+      if (!result.ok && previous) setState(previous);
+      return result;
+    } catch (error) {
+      if (previous) setState(previous);
+      return toError(error);
+    }
   }, []);
 
   const createReceipt = useCallback<StoreCtx["createReceipt"]>(
     async (invoiceId, data) => {
-      const receipt = await api.createReceipt(invoiceId, data);
-      if (!receipt) return undefined;
-      setState((s) => ({
-        ...s,
-        invoices: s.invoices.map((i) =>
-          i.id === invoiceId
-            ? { ...i, status: "paid" as const, paidAt: data.paidAt, receiptId: receipt.id }
-            : i
-        ),
-        receipts: [receipt, ...s.receipts],
-      }));
-      return receipt;
+      // No optimistic write here: the receipt's number and id are assigned by
+      // the server, so there is nothing meaningful to show until it replies.
+      try {
+        const result = await api.createReceipt(invoiceId, data);
+        if (!result.ok) return result;
+
+        const receipt = result.data;
+        setState((s) => ({
+          ...s,
+          invoices: s.invoices.map((i) =>
+            i.id === invoiceId
+              ? {
+                  ...i,
+                  status: "paid" as const,
+                  paidAt: data.paidAt,
+                  receiptId: receipt.id,
+                }
+              : i,
+          ),
+          receipts: [receipt, ...s.receipts],
+        }));
+        return { ok: true, receipt };
+      } catch (error) {
+        return toError(error);
+      }
     },
-    []
+    [],
   );
 
   const sendInvoice = useCallback<StoreCtx["sendInvoice"]>(async (id) => {
-    const result = await api.sendInvoice(id);
-    if (result.ok) {
-      setState((s) => ({
-        ...s,
-        invoices: s.invoices.map((i) =>
-          i.id === id && i.status === "draft"
-            ? { ...i, status: "sent" as const }
-            : i
-        ),
-      }));
+    try {
+      const result = await api.sendInvoice(id);
+      if (result.ok) {
+        const sentAt = new Date().toISOString();
+        setState((s) => ({
+          ...s,
+          invoices: s.invoices.map((i) =>
+            i.id === id
+              ? { ...i, sentAt, status: i.status === "draft" ? ("sent" as const) : i.status }
+              : i,
+          ),
+        }));
+      }
+      return result;
+    } catch (error) {
+      return toError(error);
     }
-    return result;
   }, []);
 
-  const sendReceipt = useCallback<StoreCtx["sendReceipt"]>(
-    (id) => api.sendReceipt(id),
-    []
+  const sendReceipt = useCallback<StoreCtx["sendReceipt"]>(async (id) => {
+    try {
+      const result = await api.sendReceipt(id);
+      if (result.ok) {
+        const sentAt = new Date().toISOString();
+        setState((s) => ({
+          ...s,
+          receipts: s.receipts.map((r) => (r.id === id ? { ...r, sentAt } : r)),
+        }));
+      }
+      return result;
+    } catch (error) {
+      return toError(error);
+    }
+  }, []);
+
+  const resetDemo = useCallback<StoreCtx["resetDemo"]>(async () => {
+    try {
+      const result = await api.resetDemo();
+      if (!result.ok) return result;
+      setState(result.data);
+      return { ok: true, snapshot: result.data };
+    } catch (error) {
+      return toError(error);
+    }
+  }, []);
+
+  // Lookups are split out so they do not re-create the whole context value.
+  const getInvoice = useCallback(
+    (id: string) => state.invoices.find((i) => i.id === id),
+    [state.invoices],
   );
-
-  const resetDemo = useCallback(async () => {
-    const data = await api.resetDemo();
-    setState(data);
-  }, []);
+  const getReceipt = useCallback(
+    (id: string) => state.receipts.find((r) => r.id === id),
+    [state.receipts],
+  );
 
   const value = useMemo<StoreCtx>(
     () => ({
-      ready,
+      ready: true,
+      demoEnabled,
       company: state.company,
       invoices: state.invoices,
       receipts: state.receipts,
@@ -185,25 +264,29 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       blankInvoice,
       upsertInvoice,
       deleteInvoice,
-      getInvoice: (id) => state.invoices.find((i) => i.id === id),
-      getReceipt: (id) => state.receipts.find((r) => r.id === id),
+      getInvoice,
+      getReceipt,
       createReceipt,
       sendInvoice,
       sendReceipt,
       resetDemo,
     }),
     [
-      ready,
-      state,
+      demoEnabled,
+      state.company,
+      state.invoices,
+      state.receipts,
       saveCompany,
       blankInvoice,
       upsertInvoice,
       deleteInvoice,
+      getInvoice,
+      getReceipt,
       createReceipt,
       sendInvoice,
       sendReceipt,
       resetDemo,
-    ]
+    ],
   );
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;

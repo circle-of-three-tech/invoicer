@@ -5,6 +5,7 @@ import { usePathname } from "next/navigation";
 import { AnimatePresence, motion } from "framer-motion";
 import { useState } from "react";
 import { Wordmark } from "./Logo";
+import { logout } from "@/lib/auth-actions";
 
 const NAV = [
   { href: "/", label: "Dashboard", icon: GridIcon },
@@ -80,6 +81,14 @@ export function Shell({ children }: { children: React.ReactNode }) {
           <p className="text-[11px] leading-relaxed text-fg-dim">
             Invoices & receipts, beautifully in sync. Saved to your database and emailed to clients.
           </p>
+          <form action={logout} className="mt-3">
+            <button
+              type="submit"
+              className="text-[11px] font-medium text-fg-dim transition hover:text-fg"
+            >
+              Sign out
+            </button>
+          </form>
         </div>
       </aside>
 
@@ -113,6 +122,14 @@ export function Shell({ children }: { children: React.ReactNode }) {
               <PlusIcon /> New Invoice
             </Link>
             {nav}
+            <form action={logout} className="mt-5 px-3.5">
+              <button
+                type="submit"
+                className="text-sm font-medium text-fg-dim transition hover:text-fg"
+              >
+                Sign out
+              </button>
+            </form>
           </motion.div>
         )}
       </AnimatePresence>

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useRef, useState } from "react";
 import { motion } from "framer-motion";
 import { useStore } from "@/lib/store";
 import { Field, inputCls } from "@/components/ui";
@@ -9,27 +9,50 @@ import { CURRENCIES } from "@/lib/format";
 import { ACCENTS } from "@/lib/accents";
 import type { Company } from "@/lib/types";
 
+const ALLOWED_LOGO_TYPES = ["image/png", "image/jpeg", "image/webp", "image/gif"];
+const MAX_LOGO_BYTES = 256 * 1024;
+
 export default function SettingsPage() {
-  const { company, saveCompany, resetDemo, ready } = useStore();
+  const { company, saveCompany, resetDemo, demoEnabled } = useStore();
+  // The company profile is server-rendered into the store, so the form starts
+  // filled in and needs no effect to catch up with an async load.
   const [form, setForm] = useState<Company>(company);
   const [saved, setSaved] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
-
-  useEffect(() => {
-    if (ready) setForm(company);
-  }, [ready, company]);
 
   const set = (patch: Partial<Company>) => setForm((f) => ({ ...f, ...patch }));
 
-  const onSave = () => {
-    saveCompany(form);
-    setSaved(true);
-    setTimeout(() => setSaved(false), 2000);
+  const onSave = async () => {
+    if (saving) return;
+    setSaving(true);
+    setError(null);
+    const result = await saveCompany(form);
+    setSaving(false);
+    if (result.ok) {
+      setSaved(true);
+      setTimeout(() => setSaved(false), 2000);
+    } else {
+      setError(result.error ?? "Could not save your settings.");
+    }
   };
 
   const onLogo = (file?: File) => {
     if (!file) return;
+    // Mirrors the server-side rule: the logo is inlined into every document and
+    // email, so reject anything oversized or not a raster image up front.
+    if (!ALLOWED_LOGO_TYPES.includes(file.type)) {
+      setError("The logo must be a PNG, JPEG, WebP or GIF image.");
+      return;
+    }
+    if (file.size > MAX_LOGO_BYTES) {
+      setError(`The logo must be under ${MAX_LOGO_BYTES / 1024} KB.`);
+      return;
+    }
+    setError(null);
     const reader = new FileReader();
+    reader.onerror = () => setError("That file could not be read.");
     reader.onload = () => set({ logoDataUrl: reader.result as string });
     reader.readAsDataURL(file);
   };
@@ -135,17 +158,40 @@ export default function SettingsPage() {
         </div>
 
         <div className="flex items-center justify-between gap-4">
-          <button
-            onClick={() => {
-              if (confirm("Reset all data to the demo sample? This clears your invoices and receipts.")) {
-                resetDemo();
-              }
-            }}
-            className="text-xs text-fg-dim transition hover:text-[#f43f6e]"
-          >
-            Reset to demo data
-          </button>
+          {/* Hidden unless ALLOW_DEMO_DATA is on, so a production deployment
+              never shows a control that wipes real invoices. */}
+          {demoEnabled ? (
+            <button
+              onClick={async () => {
+                if (
+                  !confirm(
+                    "Reset all data to the demo sample? This clears your invoices and receipts.",
+                  )
+                ) {
+                  return;
+                }
+                const result = await resetDemo();
+                if (result.ok) {
+                  setError(null);
+                  // The reset replaced the stored profile; refill the form from it.
+                  if (result.snapshot) setForm(result.snapshot.company);
+                } else {
+                  setError(result.error ?? "Could not reset the data.");
+                }
+              }}
+              className="text-xs text-fg-dim transition hover:text-[#f43f6e]"
+            >
+              Reset to demo data
+            </button>
+          ) : (
+            <span />
+          )}
           <div className="flex items-center gap-3">
+            {error && (
+              <span role="alert" className="text-xs font-medium text-[#f43f6e]">
+                ⚠ {error}
+              </span>
+            )}
             {saved && (
               <motion.span
                 initial={{ opacity: 0, x: 8 }}
@@ -157,9 +203,10 @@ export default function SettingsPage() {
             )}
             <button
               onClick={onSave}
-              className="rounded-xl px-5 py-2.5 text-sm font-semibold text-white transition tri-bg hover:opacity-90 glow"
+              disabled={saving}
+              className="rounded-xl px-5 py-2.5 text-sm font-semibold text-white transition tri-bg hover:opacity-90 disabled:opacity-50 glow"
             >
-              Save changes
+              {saving ? "Saving…" : "Save changes"}
             </button>
           </div>
         </div>

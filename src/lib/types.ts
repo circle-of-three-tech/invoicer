@@ -31,6 +31,7 @@ export type Invoice = {
   createdAt: string;
   paidAt?: string;
   receiptId?: string;
+  sentAt?: string;
 };
 
 export type PaymentMethod =
@@ -55,6 +56,7 @@ export type Receipt = {
   from: Party;
   to: Party;
   createdAt: string;
+  sentAt?: string;
 };
 
 export type Company = {
@@ -66,4 +68,11 @@ export type Company = {
   currency: string;
   accent: string;
   logoDataUrl?: string;
+};
+
+/** The full workspace as loaded from the database and held by the client store. */
+export type Snapshot = {
+  company: Company;
+  invoices: Invoice[];
+  receipts: Receipt[];
 };

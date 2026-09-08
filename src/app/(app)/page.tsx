@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { useMemo } from "react";
 import { motion } from "framer-motion";
 import { useStore } from "@/lib/store";
 import { totals, money, formatDate } from "@/lib/format";
@@ -10,14 +11,31 @@ import { accentGradient } from "@/lib/accents";
 
 export default function Dashboard() {
   const { invoices, receipts, company, ready } = useStore();
-
-  const paid = invoices.filter((i) => i.status === "paid");
-  const outstanding = invoices.filter((i) => i.status !== "paid");
-  const totalPaid = paid.reduce((s, i) => s + totals(i).total, 0);
-  const totalOutstanding = outstanding.reduce((s, i) => s + totals(i).total, 0);
   const cur = company.currency;
 
-  const recent = invoices.slice(0, 5);
+  // Every invoice's total is a reduce over its line items, so the whole summary
+  // is computed once per data change rather than on each render.
+  const summary = useMemo(() => {
+    let paidCount = 0;
+    let openCount = 0;
+    let totalPaid = 0;
+    let totalOutstanding = 0;
+
+    for (const inv of invoices) {
+      const { total } = totals(inv);
+      if (inv.status === "paid") {
+        paidCount += 1;
+        totalPaid += total;
+      } else {
+        openCount += 1;
+        totalOutstanding += total;
+      }
+    }
+    return { paidCount, openCount, totalPaid, totalOutstanding };
+  }, [invoices]);
+
+  const recent = useMemo(() => invoices.slice(0, 5), [invoices]);
+  const latestReceipts = useMemo(() => receipts.slice(0, 5), [receipts]);
 
   return (
     <div className="mx-auto max-w-6xl">
@@ -31,7 +49,7 @@ export default function Dashboard() {
           <div className="relative">
             <div className="mb-3 inline-flex items-center gap-2 rounded-full border border-black/10 bg-black/5 px-3 py-1 text-[11px] font-medium text-fg-muted">
               <span className="h-1.5 w-1.5 rounded-full tri-bg" />
-              {ready ? "Synced to this browser" : "Loading…"}
+              {ready ? "Synced to your database" : "Loading…"}
             </div>
             <h1 className="font-display text-3xl font-bold leading-tight text-fg sm:text-[40px]">
               Invoices & receipts,
@@ -62,8 +80,8 @@ export default function Dashboard() {
 
       {/* Stats */}
       <Stagger className="mb-8 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        <StatCard label="Collected" value={<AnimatedNumber value={totalPaid} currency={cur} />} sub={`${paid.length} paid`} tone="mint" />
-        <StatCard label="Outstanding" value={<AnimatedNumber value={totalOutstanding} currency={cur} />} sub={`${outstanding.length} open`} tone="gold" />
+        <StatCard label="Collected" value={<AnimatedNumber value={summary.totalPaid} currency={cur} />} sub={`${summary.paidCount} paid`} tone="mint" />
+        <StatCard label="Outstanding" value={<AnimatedNumber value={summary.totalOutstanding} currency={cur} />} sub={`${summary.openCount} open`} tone="gold" />
         <StatCard label="Invoices" value={<AnimatedNumber value={invoices.length} />} sub="all time" tone="iris" />
         <StatCard label="Receipts" value={<AnimatedNumber value={receipts.length} />} sub="issued" tone="aqua" />
       </Stagger>
@@ -123,7 +141,7 @@ export default function Dashboard() {
               <Empty label="Receipts appear here once invoices are paid" />
             ) : (
               <div className="flex flex-col gap-2.5">
-                {receipts.slice(0, 5).map((r) => (
+                {latestReceipts.map((r) => (
                   <Link
                     key={r.id}
                     href={`/receipts/${r.id}`}

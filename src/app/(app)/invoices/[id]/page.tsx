@@ -3,10 +3,11 @@
 import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import { useState } from "react";
-import { AnimatePresence, motion } from "framer-motion";
+import { AnimatePresence } from "framer-motion";
 import { useStore } from "@/lib/store";
 import { InvoiceDocument } from "@/components/documents";
 import { StatusPill, Field, inputCls } from "@/components/ui";
+import { Modal } from "@/components/Modal";
 import { formatDate, money, todayISO, totals } from "@/lib/format";
 import type { PaymentMethod } from "@/lib/types";
 
@@ -28,6 +29,7 @@ export default function InvoiceDetail() {
   const inv = getInvoice(id);
   const [payOpen, setPayOpen] = useState(false);
   const [sending, setSending] = useState(false);
+  const [busy, setBusy] = useState(false);
   const [sendMsg, setSendMsg] = useState<{ ok: boolean; text: string } | null>(null);
 
   if (ready && !inv) {
@@ -44,10 +46,15 @@ export default function InvoiceDetail() {
 
   const t = totals(inv);
 
-  const handleDelete = () => {
-    if (confirm(`Delete ${inv.number}? This also removes any linked receipt.`)) {
-      deleteInvoice(inv.id);
+  const handleDelete = async () => {
+    if (!confirm(`Delete ${inv.number}? This also removes any linked receipt.`)) return;
+    setBusy(true);
+    const result = await deleteInvoice(inv.id);
+    setBusy(false);
+    if (result.ok) {
       router.push("/invoices");
+    } else {
+      setSendMsg({ ok: false, text: result.error ?? "Could not delete this invoice." });
     }
   };
 
@@ -79,6 +86,13 @@ export default function InvoiceDetail() {
             <h1 className="font-display text-2xl font-bold text-fg">{inv.number}</h1>
             <StatusPill status={inv.status} />
           </div>
+          {/* Sending is recorded server-side; surfacing it prevents the "did I
+              already email this?" double-send. */}
+          {inv.sentAt && (
+            <p className="mt-1 text-[11px] text-fg-dim">
+              Emailed to {inv.to.email} on {formatDate(inv.sentAt)}
+            </p>
+          )}
         </div>
         <div className="flex flex-wrap gap-2">
           {inv.status !== "paid" ? (
@@ -119,10 +133,11 @@ export default function InvoiceDetail() {
           </Link>
           <button
             onClick={handleDelete}
-            className="rounded-xl border border-black/10 bg-black/5 px-3 py-2.5 text-sm font-medium text-fg-muted transition hover:border-[#f43f6e]/40 hover:text-[#f43f6e]"
+            disabled={busy}
+            className="rounded-xl border border-black/10 bg-black/5 px-3 py-2.5 text-sm font-medium text-fg-muted transition hover:border-[#f43f6e]/40 hover:text-[#f43f6e] disabled:opacity-50"
             aria-label="Delete"
           >
-            Delete
+            {busy ? "Deleting…" : "Delete"}
           </button>
         </div>
       </div>
@@ -149,9 +164,16 @@ export default function InvoiceDetail() {
             currency={inv.currency}
             onClose={() => setPayOpen(false)}
             onConfirm={async (data) => {
-              const r = await createReceipt(inv.id, data);
+              const result = await createReceipt(inv.id, data);
               setPayOpen(false);
-              if (r) router.push(`/receipts/${r.id}`);
+              if (result.receipt) {
+                router.push(`/receipts/${result.receipt.id}`);
+              } else {
+                setSendMsg({
+                  ok: false,
+                  text: result.error ?? "Could not record that payment.",
+                });
+              }
             }}
           />
         )}
@@ -174,41 +196,46 @@ function PaymentModal({
     method: PaymentMethod;
     reference: string;
     paidAt: string;
-  }) => void;
+  }) => void | Promise<void>;
 }) {
   const [amount, setAmount] = useState(defaultAmount);
   const [method, setMethod] = useState<PaymentMethod>("Bank Transfer");
   const [reference, setReference] = useState("");
   const [paidAt, setPaidAt] = useState(todayISO());
+  const [submitting, setSubmitting] = useState(false);
+
+  const amountValid = Number.isFinite(amount) && amount > 0;
+
+  const submit = async () => {
+    if (!amountValid || submitting) return;
+    setSubmitting(true);
+    await onConfirm({ amount, method, reference, paidAt });
+    setSubmitting(false);
+  };
 
   return (
-    <motion.div
-      className="fixed inset-0 z-50 flex items-center justify-center p-4"
-      initial={{ opacity: 0 }}
-      animate={{ opacity: 1 }}
-      exit={{ opacity: 0 }}
+    <Modal
+      title="Record payment"
+      description="Confirm the details and we'll generate a matching receipt instantly."
+      onClose={onClose}
     >
-      <div className="absolute inset-0 bg-bg/70 backdrop-blur-md" onClick={onClose} />
-      <motion.div
-        initial={{ opacity: 0, y: 24, scale: 0.96 }}
-        animate={{ opacity: 1, y: 0, scale: 1 }}
-        exit={{ opacity: 0, y: 20, scale: 0.97 }}
-        transition={{ type: "spring", stiffness: 260, damping: 24 }}
-        className="relative w-full max-w-md rounded-3xl border border-black/10 p-6 glass-strong"
+      <form
+        onSubmit={(e) => {
+          e.preventDefault();
+          void submit();
+        }}
       >
-        <div className="mb-1 flex items-center gap-2">
-          <span className="flex h-8 w-8 items-center justify-center rounded-lg text-white tri-bg">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><path d="M20 6L9 17l-5-5" /></svg>
-          </span>
-          <h3 className="font-display text-lg font-semibold text-fg">Record payment</h3>
-        </div>
-        <p className="mb-5 text-xs text-fg-muted">
-          Confirm the details and we&apos;ll generate a matching receipt instantly.
-        </p>
-
         <div className="space-y-4">
           <Field label={`Amount received (${currency})`}>
-            <input type="number" min={0} className={inputCls} value={amount} onChange={(e) => setAmount(Number(e.target.value))} />
+            <input
+              type="number"
+              min={0}
+              step="0.01"
+              required
+              className={inputCls}
+              value={amount}
+              onChange={(e) => setAmount(Number(e.target.value))}
+            />
           </Field>
           <Field label="Payment method">
             <select className={inputCls} value={method} onChange={(e) => setMethod(e.target.value as PaymentMethod)}>
@@ -224,26 +251,31 @@ function PaymentModal({
               <input className={inputCls} value={reference} onChange={(e) => setReference(e.target.value)} placeholder="TXN-…" />
             </Field>
             <Field label="Date paid">
-              <input type="date" className={inputCls} value={paidAt} onChange={(e) => setPaidAt(e.target.value)} />
+              <input type="date" required className={inputCls} value={paidAt} onChange={(e) => setPaidAt(e.target.value)} />
             </Field>
           </div>
         </div>
 
         <div className="mt-6 flex gap-2">
-          <button onClick={onClose} className="flex-1 rounded-xl border border-black/10 bg-black/5 py-2.5 text-sm font-medium text-fg transition hover:bg-black/10">
+          <button
+            type="button"
+            onClick={onClose}
+            className="flex-1 rounded-xl border border-black/10 bg-black/5 py-2.5 text-sm font-medium text-fg transition hover:bg-black/10"
+          >
             Cancel
           </button>
           <button
-            onClick={() => onConfirm({ amount, method, reference, paidAt })}
-            className="flex-1 rounded-xl py-2.5 text-sm font-semibold text-white transition tri-bg hover:opacity-90 glow"
+            type="submit"
+            disabled={!amountValid || submitting}
+            className="flex-1 rounded-xl py-2.5 text-sm font-semibold text-white transition tri-bg hover:opacity-90 disabled:opacity-50 glow"
           >
-            Generate receipt →
+            {submitting ? "Working…" : "Generate receipt →"}
           </button>
         </div>
         <div className="mt-3 text-center text-[11px] text-fg-dim">
           Marking as paid · {money(defaultAmount, currency)} due
         </div>
-      </motion.div>
-    </motion.div>
+      </form>
+    </Modal>
   );
 }

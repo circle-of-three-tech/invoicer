@@ -1,7 +1,7 @@
 "use client";
 
-import { animate, motion, useInView, useMotionValue } from "framer-motion";
-import { useEffect, useRef, useState } from "react";
+import { animate, motion, useInView } from "framer-motion";
+import { useEffect, useRef } from "react";
 import { money } from "@/lib/format";
 
 export function Reveal({
@@ -75,6 +75,13 @@ export function StaggerItem({
   );
 }
 
+/**
+ * Counts up to `value` when it scrolls into view.
+ *
+ * The tween writes straight to the DOM node instead of going through state: at
+ * 60fps a `setState` per frame would re-render this component — and anything
+ * that renders alongside it — roughly seventy times per number.
+ */
 export function AnimatedNumber({
   value,
   currency,
@@ -86,28 +93,38 @@ export function AnimatedNumber({
 }) {
   const ref = useRef<HTMLSpanElement>(null);
   const inView = useInView(ref, { once: true });
-  const mv = useMotionValue(0);
-  const [display, setDisplay] = useState(currency ? money(0, currency) : "0");
+
+  const format = (n: number) =>
+    currency ? money(n, currency) : Math.round(n).toLocaleString();
 
   useEffect(() => {
-    if (!inView) return;
-    const controls = animate(mv, value, {
+    const node = ref.current;
+    if (!node) return;
+
+    // Respect a reduced-motion preference by showing the final value outright.
+    const reduceMotion =
+      typeof window !== "undefined" &&
+      window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+
+    if (!inView || reduceMotion) {
+      node.textContent = format(inView ? value : 0);
+      return;
+    }
+
+    const controls = animate(0, value, {
       duration: 1.1,
       ease: [0.16, 1, 0.3, 1],
       onUpdate: (v) => {
-        setDisplay(
-          currency
-            ? money(v, currency)
-            : Math.round(v).toLocaleString()
-        );
+        node.textContent = format(v);
       },
     });
     return () => controls.stop();
-  }, [inView, value, currency, mv]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [inView, value, currency]);
 
   return (
-    <span ref={ref} className={className}>
-      {display}
+    <span ref={ref} className={className} suppressHydrationWarning>
+      {format(0)}
     </span>
   );
 }

@@ -1,412 +1,403 @@
 "use server";
 
-import type { Prisma } from "@prisma/client";
+import { Prisma } from "@prisma/client";
 import { prisma } from "./db";
-import { nextNumber } from "./format";
+import { allowDemoData } from "./env";
+import { loadSnapshot, type Snapshot } from "./data";
 import { sendDocumentEmail } from "./email";
-import type {
-  Company,
-  Invoice,
-  InvoiceStatus,
-  PaymentMethod,
-  Receipt,
-} from "./types";
+import { nextNumber, numberPrefix } from "./format";
+import {
+  COMPANY_ID,
+  DEFAULT_COMPANY,
+  invoiceScalarData,
+  mapCompany,
+  mapInvoice,
+  mapReceipt,
+} from "./mappers";
+import { rateLimit } from "./rate-limit";
+import { requireSession } from "./session";
+import { seedDemoData } from "./seed";
+import type { Invoice, Receipt } from "./types";
+import {
+  ValidationError,
+  id as parseId,
+  parseCompany,
+  parseInvoice,
+  parsePayment,
+} from "./validate";
 
-const COMPANY_ID = "default";
+/**
+ * Write side of the data layer.
+ *
+ * Every export here is a public POST endpoint, so each one authorises first and
+ * validates its input before touching the database. Failures come back as
+ * `{ ok: false, error }` rather than thrown errors, so the UI can show them.
+ */
 
-const DEFAULT_COMPANY: Company = {
-  name: "Circle of Three Technologies",
-  email: "circleofthreetechnologies@gmail.com",
-  phone: "+1 (000) 000-0000",
-  address: "123 Innovation Way\nTech City",
-  taxId: "",
-  currency: "USD",
-  accent: "iris",
-};
+export type ActionResult<T = undefined> =
+  | ({ ok: true } & (T extends undefined ? { data?: never } : { data: T }))
+  | { ok: false; error: string };
 
-/* -------------------------------------------------------------------------- */
-/*  Mappers: flat DB rows <-> nested app types                                 */
-/* -------------------------------------------------------------------------- */
-
-type DbInvoice = Prisma.InvoiceGetPayload<{ include: { items: true } }>;
-type DbReceipt = Prisma.ReceiptGetPayload<object>;
-type DbCompany = Prisma.CompanyGetPayload<object>;
-
-function mapCompany(row: DbCompany): Company {
-  return {
-    name: row.name,
-    email: row.email,
-    phone: row.phone,
-    address: row.address,
-    taxId: row.taxId,
-    currency: row.currency,
-    accent: row.accent,
-    logoDataUrl: row.logoDataUrl ?? undefined,
-  };
-}
-
-function mapInvoice(row: DbInvoice): Invoice {
-  return {
-    id: row.id,
-    number: row.number,
-    status: row.status as InvoiceStatus,
-    issueDate: row.issueDate,
-    dueDate: row.dueDate,
-    currency: row.currency,
-    from: {
-      name: row.fromName,
-      email: row.fromEmail,
-      address: row.fromAddress,
-      phone: row.fromPhone,
-    },
-    to: {
-      name: row.toName,
-      email: row.toEmail,
-      address: row.toAddress,
-      phone: row.toPhone,
-    },
-    items: [...row.items]
-      .sort((a, b) => a.position - b.position)
-      .map((it) => ({
-        id: it.id,
-        description: it.description,
-        quantity: it.quantity,
-        rate: it.rate,
-      })),
-    taxRate: row.taxRate,
-    discount: row.discount,
-    notes: row.notes,
-    accent: row.accent,
-    createdAt: row.createdAt,
-    paidAt: row.paidAt ?? undefined,
-    receiptId: row.receiptId ?? undefined,
-  };
-}
-
-function mapReceipt(row: DbReceipt): Receipt {
-  return {
-    id: row.id,
-    number: row.number,
-    invoiceId: row.invoiceId,
-    invoiceNumber: row.invoiceNumber,
-    amount: row.amount,
-    currency: row.currency,
-    method: row.method as PaymentMethod,
-    reference: row.reference,
-    paidAt: row.paidAt,
-    from: {
-      name: row.fromName,
-      email: row.fromEmail,
-      address: row.fromAddress,
-      phone: row.fromPhone,
-    },
-    to: {
-      name: row.toName,
-      email: row.toEmail,
-      address: row.toAddress,
-      phone: row.toPhone,
-    },
-    createdAt: row.createdAt,
-  };
-}
-
-function invoiceScalarData(inv: Invoice) {
-  return {
-    number: inv.number,
-    status: inv.status,
-    issueDate: inv.issueDate,
-    dueDate: inv.dueDate,
-    currency: inv.currency,
-    fromName: inv.from.name,
-    fromEmail: inv.from.email,
-    fromAddress: inv.from.address,
-    fromPhone: inv.from.phone,
-    toName: inv.to.name,
-    toEmail: inv.to.email,
-    toAddress: inv.to.address,
-    toPhone: inv.to.phone,
-    taxRate: inv.taxRate,
-    discount: inv.discount,
-    notes: inv.notes,
-    accent: inv.accent,
-    createdAt: inv.createdAt,
-    paidAt: inv.paidAt ?? null,
-    receiptId: inv.receiptId ?? null,
-  };
+function failure(error: unknown): { ok: false; error: string } {
+  if (error instanceof ValidationError) return { ok: false, error: error.message };
+  // Anything else may carry internal detail (SQL, connection strings), so log
+  // it server-side and hand the client a generic message.
+  console.error("[action]", error);
+  return { ok: false, error: "Something went wrong. Please try again." };
 }
 
 /* -------------------------------------------------------------------------- */
-/*  Seed (runs once, when the company row does not yet exist)                   */
+/*  Document numbering                                                         */
 /* -------------------------------------------------------------------------- */
 
-async function seedIfEmpty(): Promise<void> {
-  const existing = await prisma.company.findUnique({ where: { id: COMPANY_ID } });
-  if (existing) return;
-
-  const now = new Date();
-  const iso = (days: number) => {
-    const d = new Date(now);
-    d.setDate(d.getDate() + days);
-    return d.toISOString().slice(0, 10);
-  };
-  const full = (days: number) => {
-    const d = new Date(now);
-    d.setDate(d.getDate() + days);
-    return d.toISOString();
-  };
-
-  await prisma.company.create({
-    data: { id: COMPANY_ID, ...DEFAULT_COMPANY, logoDataUrl: null },
+/**
+ * Numbers are `PREFIX-YYYY-NNNN` and zero-padded, so within one year's prefix
+ * the lexicographically greatest row is also the highest number — a single
+ * indexed lookup instead of reading every number in the table.
+ *
+ * Scoping to this year's prefix matters: numbers are editable, so an invoice
+ * hand-numbered "ZZZ" would otherwise sort to the top and yield a suggestion
+ * that starts back at 0001 and collides forever.
+ */
+async function nextInvoiceNumber(): Promise<string> {
+  const stem = numberPrefix("INV");
+  const latest = await prisma.invoice.findFirst({
+    where: { number: { startsWith: stem } },
+    orderBy: { number: "desc" },
+    select: { number: true },
   });
+  return nextNumber("INV", latest ? [latest.number] : []);
+}
 
-  const from = {
-    fromName: DEFAULT_COMPANY.name,
-    fromEmail: DEFAULT_COMPANY.email,
-    fromAddress: DEFAULT_COMPANY.address,
-    fromPhone: DEFAULT_COMPANY.phone,
-  };
-
-  await prisma.invoice.create({
-    data: {
-      id: "SEED-INV-0002",
-      number: "INV-2026-0002",
-      status: "sent",
-      issueDate: iso(-5),
-      dueDate: iso(10),
-      currency: "USD",
-      ...from,
-      toName: "Lumen Health",
-      toEmail: "finance@lumen.health",
-      toAddress: "500 Vitality Blvd\nAustin, TX",
-      toPhone: "+1 (512) 555-0117",
-      taxRate: 0,
-      discount: 0,
-      notes: "Net 15. Bank details on file.",
-      accent: "aqua",
-      createdAt: full(-5),
-      items: {
-        create: [
-          { id: "SEED-INV2-IT1", description: "Mobile app — 2 week sprint", quantity: 2, rate: 6200, position: 0 },
-          { id: "SEED-INV2-IT2", description: "QA & release management", quantity: 1, rate: 1500, position: 1 },
-        ],
-      },
-    },
+async function nextReceiptNumber(): Promise<string> {
+  const stem = numberPrefix("RCPT");
+  const latest = await prisma.receipt.findFirst({
+    where: { number: { startsWith: stem } },
+    orderBy: { number: "desc" },
+    select: { number: true },
   });
+  return nextNumber("RCPT", latest ? [latest.number] : []);
+}
 
-  await prisma.invoice.create({
-    data: {
-      id: "SEED-INV-0001",
-      number: "INV-2026-0001",
-      status: "paid",
-      issueDate: iso(-18),
-      dueDate: iso(-3),
-      currency: "USD",
-      ...from,
-      toName: "Northwind Studios",
-      toEmail: "accounts@northwind.co",
-      toAddress: "88 Harbour Street\nSeattle, WA",
-      toPhone: "+1 (206) 555-0102",
-      taxRate: 7.5,
-      discount: 100,
-      notes: "Thank you for your business. Payment received in full.",
-      accent: "iris",
-      createdAt: full(-18),
-      paidAt: iso(-2),
-      items: {
-        create: [
-          { id: "SEED-INV1-IT1", description: "Brand identity system", quantity: 1, rate: 2400, position: 0 },
-          { id: "SEED-INV1-IT2", description: "Landing page design", quantity: 3, rate: 480, position: 1 },
-        ],
-      },
-    },
-  });
+function isDuplicateNumber(error: unknown): boolean {
+  return (
+    error instanceof Prisma.PrismaClientKnownRequestError &&
+    error.code === "P2002" &&
+    String(error.meta?.target ?? "").includes("number")
+  );
+}
+
+/** The next free invoice number, so the builder can prefill one. */
+export async function suggestInvoiceNumber(): Promise<ActionResult<string>> {
+  try {
+    await requireSession();
+    return { ok: true, data: await nextInvoiceNumber() };
+  } catch (error) {
+    return failure(error);
+  }
 }
 
 /* -------------------------------------------------------------------------- */
-/*  Public server actions                                                      */
+/*  Company                                                                    */
 /* -------------------------------------------------------------------------- */
 
-export async function bootstrap(): Promise<{
-  company: Company;
-  invoices: Invoice[];
-  receipts: Receipt[];
-}> {
-  await seedIfEmpty();
-
-  const [company, invoices, receipts] = await Promise.all([
-    prisma.company.findUnique({ where: { id: COMPANY_ID } }),
-    prisma.invoice.findMany({
-      include: { items: true },
-      orderBy: { createdAt: "desc" },
-    }),
-    prisma.receipt.findMany({ orderBy: { createdAt: "desc" } }),
-  ]);
-
-  return {
-    company: company ? mapCompany(company) : { ...DEFAULT_COMPANY },
-    invoices: invoices.map(mapInvoice),
-    receipts: receipts.map(mapReceipt),
-  };
+export async function saveCompany(input: unknown): Promise<ActionResult> {
+  try {
+    await requireSession();
+    const company = parseCompany(input);
+    const data = {
+      name: company.name,
+      email: company.email,
+      phone: company.phone,
+      address: company.address,
+      taxId: company.taxId,
+      currency: company.currency,
+      accent: company.accent,
+      logoDataUrl: company.logoDataUrl ?? null,
+    };
+    await prisma.company.upsert({
+      where: { id: COMPANY_ID },
+      create: { id: COMPANY_ID, ...data },
+      update: data,
+    });
+    return { ok: true };
+  } catch (error) {
+    return failure(error);
+  }
 }
 
-export async function resetDemo(): Promise<{
-  company: Company;
-  invoices: Invoice[];
-  receipts: Receipt[];
-}> {
-  await prisma.$transaction([
-    prisma.receipt.deleteMany({}),
-    prisma.lineItem.deleteMany({}),
-    prisma.invoice.deleteMany({}),
-    prisma.company.deleteMany({}),
-  ]);
-  return bootstrap();
-}
+/* -------------------------------------------------------------------------- */
+/*  Invoices                                                                   */
+/* -------------------------------------------------------------------------- */
 
-export async function saveCompany(company: Company): Promise<void> {
-  const data = {
-    name: company.name,
-    email: company.email,
-    phone: company.phone,
-    address: company.address,
-    taxId: company.taxId,
-    currency: company.currency,
-    accent: company.accent,
-    logoDataUrl: company.logoDataUrl ?? null,
-  };
-  await prisma.company.upsert({
-    where: { id: COMPANY_ID },
-    create: { id: COMPANY_ID, ...data },
-    update: data,
-  });
-}
-
-export async function saveInvoice(inv: Invoice): Promise<void> {
+async function writeInvoice(inv: Invoice): Promise<Invoice> {
   const scalar = invoiceScalarData(inv);
   const items = inv.items.map((it, position) => ({
     id: it.id,
+    invoiceId: inv.id,
     description: it.description,
-    quantity: Number(it.quantity) || 0,
-    rate: Number(it.rate) || 0,
+    quantity: it.quantity,
+    rate: it.rate,
     position,
   }));
 
-  // Replace line items wholesale — simplest correct approach for a small doc.
-  await prisma.$transaction([
+  // One round-trip, and atomic: the invoice never exists with a half-written
+  // set of line items. Replacing them wholesale is the simplest correct edit
+  // for a document this small.
+  const [row] = await prisma.$transaction([
     prisma.invoice.upsert({
       where: { id: inv.id },
       create: { id: inv.id, ...scalar },
       update: scalar,
     }),
     prisma.lineItem.deleteMany({ where: { invoiceId: inv.id } }),
-    prisma.lineItem.createMany({
-      data: items.map((it) => ({ ...it, invoiceId: inv.id })),
-    }),
+    prisma.lineItem.createMany({ data: items }),
   ]);
+
+  return { ...inv, number: row.number };
 }
 
-export async function deleteInvoice(id: string): Promise<void> {
-  // Line items cascade; receipts reference the invoice loosely, remove them too.
-  await prisma.$transaction([
-    prisma.receipt.deleteMany({ where: { invoiceId: id } }),
-    prisma.invoice.delete({ where: { id } }),
-  ]);
+export async function saveInvoice(input: unknown): Promise<ActionResult<Invoice>> {
+  try {
+    await requireSession();
+    const invoice = parseInvoice(input);
+
+    // Two tabs (or two people) can pick the same number. Each retry re-reads
+    // the highest number, which now includes the row that just won the race, so
+    // the sequence converges instead of colliding on the same value again.
+    let candidate = invoice;
+    for (let attempt = 0; attempt < 4; attempt++) {
+      try {
+        return { ok: true, data: await writeInvoice(candidate) };
+      } catch (error) {
+        if (!isDuplicateNumber(error)) throw error;
+        candidate = { ...invoice, number: await nextInvoiceNumber() };
+      }
+    }
+    return {
+      ok: false,
+      error: "That invoice number is already taken. Try a different one.",
+    };
+  } catch (error) {
+    return failure(error);
+  }
 }
+
+export async function deleteInvoice(input: unknown): Promise<ActionResult> {
+  try {
+    await requireSession();
+    const invoiceId = parseId(input, "Invoice id");
+    // Line items cascade; receipts reference the invoice loosely, so remove
+    // them explicitly in the same transaction.
+    await prisma.$transaction([
+      prisma.receipt.deleteMany({ where: { invoiceId } }),
+      prisma.invoice.delete({ where: { id: invoiceId } }),
+    ]);
+    return { ok: true };
+  } catch (error) {
+    if (
+      error instanceof Prisma.PrismaClientKnownRequestError &&
+      error.code === "P2025"
+    ) {
+      // Already gone — the caller's intent is satisfied either way.
+      return { ok: true };
+    }
+    return failure(error);
+  }
+}
+
+/* -------------------------------------------------------------------------- */
+/*  Receipts                                                                   */
+/* -------------------------------------------------------------------------- */
 
 export async function createReceipt(
-  invoiceId: string,
-  data: Pick<Receipt, "amount" | "method" | "reference" | "paidAt">,
-): Promise<Receipt | null> {
-  const inv = await prisma.invoice.findUnique({ where: { id: invoiceId } });
-  if (!inv) return null;
+  invoiceIdInput: unknown,
+  paymentInput: unknown,
+): Promise<ActionResult<Receipt>> {
+  try {
+    await requireSession();
+    const invoiceId = parseId(invoiceIdInput, "Invoice id");
+    const payment = parsePayment(paymentInput);
 
-  const existing = await prisma.receipt.findMany({ select: { number: true } });
-  const number = nextNumber(
-    "RCPT",
-    existing.map((r) => r.number),
-  );
-  const id = `RCPT-${Date.now().toString(36).toUpperCase()}`;
+    const inv = await prisma.invoice.findUnique({ where: { id: invoiceId } });
+    if (!inv) return { ok: false, error: "That invoice no longer exists." };
 
-  const [receipt] = await prisma.$transaction([
-    prisma.receipt.create({
+    const id = `RCPT-${Date.now().toString(36).toUpperCase()}`;
+
+    // Recording a payment races the same way saving an invoice does: two
+    // clients can read the same highest receipt number before either writes.
+    // Each retry re-reads it, so the sequence converges.
+    for (let attempt = 0; attempt < 4; attempt++) {
+      try {
+        const [receipt] = await prisma.$transaction([
+          prisma.receipt.create({
+            data: {
+              id,
+              number: await nextReceiptNumber(),
+              invoiceId: inv.id,
+              invoiceNumber: inv.number,
+              amount: payment.amount,
+              currency: inv.currency,
+              method: payment.method,
+              reference: payment.reference,
+              paidAt: payment.paidAt,
+              fromName: inv.fromName,
+              fromEmail: inv.fromEmail,
+              fromAddress: inv.fromAddress,
+              fromPhone: inv.fromPhone,
+              toName: inv.toName,
+              toEmail: inv.toEmail,
+              toAddress: inv.toAddress,
+              toPhone: inv.toPhone,
+              createdAt: new Date().toISOString(),
+            },
+          }),
+          prisma.invoice.update({
+            where: { id: inv.id },
+            data: { status: "paid", paidAt: payment.paidAt, receiptId: id },
+          }),
+        ]);
+
+        return { ok: true, data: mapReceipt(receipt) };
+      } catch (error) {
+        if (!isDuplicateNumber(error)) throw error;
+      }
+    }
+
+    return {
+      ok: false,
+      error: "Could not allocate a receipt number. Please try again.",
+    };
+  } catch (error) {
+    return failure(error);
+  }
+}
+
+/* -------------------------------------------------------------------------- */
+/*  Email                                                                      */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Sending burns a real SMTP quota and lands in someone's inbox, so it is capped
+ * twice: per document (no accidental double-sends or resend loops) and overall
+ * (the mailbox cannot be turned into a relay by a stolen session).
+ */
+function checkSendQuota(documentId: string): string | null {
+  const perDocument = rateLimit(`send:${documentId}`, 5, 60 * 60);
+  if (!perDocument.ok) {
+    return `This document was emailed several times already. Try again in ${Math.ceil(
+      perDocument.retryAfterSeconds / 60,
+    )} minutes.`;
+  }
+  const overall = rateLimit("send:all", 100, 60 * 60);
+  if (!overall.ok) {
+    return "Hourly email limit reached. Please try again later.";
+  }
+  return null;
+}
+
+export async function sendInvoice(input: unknown): Promise<ActionResult> {
+  try {
+    await requireSession();
+    const invoiceId = parseId(input, "Invoice id");
+
+    const quotaError = checkSendQuota(invoiceId);
+    if (quotaError) return { ok: false, error: quotaError };
+
+    const [row, companyRow] = await Promise.all([
+      prisma.invoice.findUnique({
+        where: { id: invoiceId },
+        include: { items: { orderBy: { position: "asc" } } },
+      }),
+      prisma.company.findUnique({ where: { id: COMPANY_ID } }),
+    ]);
+    if (!row) return { ok: false, error: "Invoice not found." };
+
+    const invoice = mapInvoice(row);
+    if (!invoice.to.email) return { ok: false, error: "Client has no email address." };
+
+    const result = await sendDocumentEmail({
+      kind: "invoice",
+      invoice,
+      company: companyRow ? mapCompany(companyRow) : { ...DEFAULT_COMPANY },
+    });
+    if (!result.ok) return result;
+
+    await prisma.invoice.update({
+      where: { id: invoiceId },
       data: {
-        id,
-        number,
-        invoiceId: inv.id,
-        invoiceNumber: inv.number,
-        amount: data.amount,
-        currency: inv.currency,
-        method: data.method,
-        reference: data.reference,
-        paidAt: data.paidAt,
-        fromName: inv.fromName,
-        fromEmail: inv.fromEmail,
-        fromAddress: inv.fromAddress,
-        fromPhone: inv.fromPhone,
-        toName: inv.toName,
-        toEmail: inv.toEmail,
-        toAddress: inv.toAddress,
-        toPhone: inv.toPhone,
-        createdAt: new Date().toISOString(),
+        sentAt: new Date().toISOString(),
+        status: row.status === "draft" ? "sent" : row.status,
       },
-    }),
-    prisma.invoice.update({
-      where: { id: inv.id },
-      data: { status: "paid", paidAt: data.paidAt, receiptId: id },
-    }),
-  ]);
-
-  return mapReceipt(receipt);
+    });
+    return { ok: true };
+  } catch (error) {
+    return failure(error);
+  }
 }
 
-export type SendResult = { ok: boolean; error?: string };
+export async function sendReceipt(input: unknown): Promise<ActionResult> {
+  try {
+    await requireSession();
+    const receiptId = parseId(input, "Receipt id");
 
-export async function sendInvoice(id: string): Promise<SendResult> {
-  const row = await prisma.invoice.findUnique({
-    where: { id },
-    include: { items: true },
-  });
-  if (!row) return { ok: false, error: "Invoice not found." };
+    const quotaError = checkSendQuota(receiptId);
+    if (quotaError) return { ok: false, error: quotaError };
 
-  const companyRow = await prisma.company.findUnique({ where: { id: COMPANY_ID } });
-  const invoice = mapInvoice(row);
-  if (!invoice.to.email) return { ok: false, error: "Client has no email address." };
+    const [row, companyRow] = await Promise.all([
+      prisma.receipt.findUnique({ where: { id: receiptId } }),
+      prisma.company.findUnique({ where: { id: COMPANY_ID } }),
+    ]);
+    if (!row) return { ok: false, error: "Receipt not found." };
 
-  const result = await sendDocumentEmail({
-    kind: "invoice",
-    invoice,
-    company: companyRow ? mapCompany(companyRow) : { ...DEFAULT_COMPANY },
-  });
-  if (!result.ok) return result;
+    const receipt = mapReceipt(row);
+    if (!receipt.to.email) return { ok: false, error: "Client has no email address." };
 
-  await prisma.invoice.update({
-    where: { id },
-    data: {
-      sentAt: new Date().toISOString(),
-      status: row.status === "draft" ? "sent" : row.status,
-    },
-  });
-  return { ok: true };
+    const result = await sendDocumentEmail({
+      kind: "receipt",
+      receipt,
+      company: companyRow ? mapCompany(companyRow) : { ...DEFAULT_COMPANY },
+    });
+    if (!result.ok) return result;
+
+    await prisma.receipt.update({
+      where: { id: receiptId },
+      data: { sentAt: new Date().toISOString() },
+    });
+    return { ok: true };
+  } catch (error) {
+    return failure(error);
+  }
 }
 
-export async function sendReceipt(id: string): Promise<SendResult> {
-  const row = await prisma.receipt.findUnique({ where: { id } });
-  if (!row) return { ok: false, error: "Receipt not found." };
+/* -------------------------------------------------------------------------- */
+/*  Demo data (opt-in only)                                                    */
+/* -------------------------------------------------------------------------- */
 
-  const companyRow = await prisma.company.findUnique({ where: { id: COMPANY_ID } });
-  const receipt = mapReceipt(row);
-  if (!receipt.to.email) return { ok: false, error: "Client has no email address." };
+/**
+ * Wipes every invoice, receipt and setting, then reinstates the sample data.
+ * Guarded by ALLOW_DEMO_DATA so it cannot be reached on a real deployment even
+ * with a valid session.
+ */
+export async function resetDemo(): Promise<ActionResult<Snapshot>> {
+  try {
+    await requireSession();
+    if (!allowDemoData()) {
+      return {
+        ok: false,
+        error: "Demo data is disabled on this deployment.",
+      };
+    }
 
-  const result = await sendDocumentEmail({
-    kind: "receipt",
-    receipt,
-    company: companyRow ? mapCompany(companyRow) : { ...DEFAULT_COMPANY },
-  });
-  if (!result.ok) return result;
-
-  await prisma.receipt.update({
-    where: { id },
-    data: { sentAt: new Date().toISOString() },
-  });
-  return { ok: true };
+    await prisma.$transaction([
+      prisma.receipt.deleteMany({}),
+      prisma.lineItem.deleteMany({}),
+      prisma.invoice.deleteMany({}),
+      prisma.company.deleteMany({}),
+    ]);
+    await seedDemoData();
+    return { ok: true, data: await loadSnapshot() };
+  } catch (error) {
+    return failure(error);
+  }
 }
