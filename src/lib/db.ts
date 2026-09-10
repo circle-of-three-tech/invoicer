@@ -29,5 +29,24 @@ const globalForPrisma = globalThis as unknown as {
   prisma?: ReturnType<typeof createClient>;
 };
 
-export const prisma = globalForPrisma.prisma ?? createClient();
-globalForPrisma.prisma = prisma;
+function getClient() {
+  globalForPrisma.prisma ??= createClient();
+  return globalForPrisma.prisma;
+}
+
+// Construction is deferred to the first property access rather than done at
+// import time. `next build` imports every route module to collect page data,
+// and it does that with no runtime secrets — a client built eagerly here would
+// read DATABASE_URL then and fail the build. With the proxy, a build-time
+// import is inert and only an actual query needs the connection string.
+export const prisma = new Proxy({} as ReturnType<typeof createClient>, {
+  get(_target, prop, receiver) {
+    return Reflect.get(getClient(), prop, receiver);
+  },
+  set(_target, prop, value, receiver) {
+    return Reflect.set(getClient(), prop, value, receiver);
+  },
+  has(_target, prop) {
+    return Reflect.has(getClient(), prop);
+  },
+});
