@@ -1,6 +1,7 @@
 import "server-only";
 import { prisma } from "./db";
 import {
+  COMPANY_FIELDS,
   COMPANY_ID,
   DEFAULT_COMPANY,
   mapCompany,
@@ -22,7 +23,13 @@ export type { Snapshot } from "./types";
 
 export async function loadSnapshot(): Promise<Snapshot> {
   const [company, invoices, receipts] = await Promise.all([
-    prisma.company.findUnique({ where: { id: COMPANY_ID } }),
+    // Selecting explicitly leaves `logoDataUrl` in the database, where it
+    // belongs: the bytes are served once from /api/logo and cached, rather
+    // than re-read and re-serialised on every page load.
+    prisma.company.findUnique({
+      where: { id: COMPANY_ID },
+      select: COMPANY_FIELDS,
+    }),
     prisma.invoice.findMany({
       // Order the items in SQL so the mapper does not sort in JS per invoice.
       include: { items: { orderBy: { position: "asc" } } },

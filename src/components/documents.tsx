@@ -2,7 +2,7 @@
 
 import { motion } from "framer-motion";
 import type { Company, Invoice, Receipt } from "@/lib/types";
-import { formatDate, lineTotal, money, totals } from "@/lib/format";
+import { formatDate, lineTotal, logoUrl, money, totals } from "@/lib/format";
 import { accent, accentGradient } from "@/lib/accents";
 
 function Triad({ color = "#7c5cff" }: { color?: string }) {
@@ -82,11 +82,12 @@ function PartyBlock({
 
 export function InvoiceDocument({
   invoice,
-  logoDataUrl,
+  logoVersion,
 }: {
   invoice: Invoice;
-  logoDataUrl?: string;
+  logoVersion?: string;
 }) {
+  const logo = logoUrl(logoVersion);
   const a = accent(invoice.accent);
   const t = totals(invoice);
   const paid = invoice.status === "paid";
@@ -107,9 +108,9 @@ export function InvoiceDocument({
       {/* header */}
       <div className="flex items-start justify-between gap-6">
         <div className="flex items-center gap-3">
-          {logoDataUrl ? (
+          {logo ? (
             // eslint-disable-next-line @next/next/no-img-element
-            <img src={logoDataUrl} alt="logo" className="h-11 w-11 rounded-lg object-cover" />
+            <img src={logo} alt="" className="h-11 w-11 rounded-lg object-cover" />
           ) : (
             <Triad color={a.solid} />
           )}
@@ -226,13 +227,14 @@ export function ReceiptDocument({
   company?: Company;
 }) {
   const a = accent(company?.accent ?? "mint");
+  const companyLogo = logoUrl(company?.logoVersion);
   return (
     <Paper accentKey={company?.accent ?? "mint"}>
       <div className="flex items-start justify-between gap-6">
         <div className="flex items-center gap-3">
-          {company?.logoDataUrl ? (
+          {companyLogo ? (
             // eslint-disable-next-line @next/next/no-img-element
-            <img src={company.logoDataUrl} alt="logo" className="h-11 w-11 rounded-lg object-cover" />
+            <img src={companyLogo} alt="" className="h-11 w-11 rounded-lg object-cover" />
           ) : (
             <Triad color={a.solid} />
           )}

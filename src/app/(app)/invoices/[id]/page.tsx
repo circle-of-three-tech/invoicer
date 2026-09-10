@@ -155,7 +155,7 @@ export default function InvoiceDetail() {
         </div>
       )}
 
-      <InvoiceDocument invoice={inv} logoDataUrl={company.logoDataUrl} />
+      <InvoiceDocument invoice={inv} logoVersion={company.logoVersion} />
 
       <AnimatePresence>
         {payOpen && (

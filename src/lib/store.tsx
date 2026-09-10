@@ -26,7 +26,7 @@ type StoreCtx = {
   company: Company;
   invoices: Invoice[];
   receipts: Receipt[];
-  saveCompany: (c: Company) => Promise<Result>;
+  saveCompany: (c: Company) => Promise<Result & { company?: Company }>;
   blankInvoice: () => Invoice;
   upsertInvoice: (inv: Invoice) => Promise<Result & { invoice?: Invoice }>;
   deleteInvoice: (id: string) => Promise<Result>;
@@ -60,7 +60,7 @@ export function StoreProvider({
 }) {
   const [state, setState] = useState<StoreShape>(initial);
 
-  const saveCompany = useCallback(async (company: Company): Promise<Result> => {
+  const saveCompany = useCallback<StoreCtx["saveCompany"]>(async (company) => {
     let previous: Company | undefined;
     setState((s) => {
       previous = s.company;
@@ -68,11 +68,18 @@ export function StoreProvider({
     });
     try {
       const result = await api.saveCompany(company);
-      if (!result.ok && previous) {
-        const rollback = previous;
-        setState((s) => ({ ...s, company: rollback }));
+      if (!result.ok) {
+        if (previous) {
+          const rollback = previous;
+          setState((s) => ({ ...s, company: rollback }));
+        }
+        return result;
       }
-      return result;
+      // The server is authoritative about the stored profile — in particular
+      // `logoVersion`, which the client cannot compute.
+      const saved = result.data;
+      setState((s) => ({ ...s, company: saved }));
+      return { ok: true, company: saved };
     } catch (error) {
       if (previous) {
         const rollback = previous;

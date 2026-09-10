@@ -5,7 +5,7 @@ import { motion } from "framer-motion";
 import { useStore } from "@/lib/store";
 import { Field, inputCls } from "@/components/ui";
 import { Reveal } from "@/components/motion";
-import { CURRENCIES } from "@/lib/format";
+import { CURRENCIES, logoUrl } from "@/lib/format";
 import { ACCENTS } from "@/lib/accents";
 import type { Company } from "@/lib/types";
 
@@ -24,6 +24,14 @@ export default function SettingsPage() {
 
   const set = (patch: Partial<Company>) => setForm((f) => ({ ...f, ...patch }));
 
+  // What to show in the swatch: a freshly picked file (a data URL held only
+  // until it is saved), the stored logo fetched by version, or nothing —
+  // `logoDataUrl === null` means the user has pressed Remove but not saved yet.
+  const preview =
+    form.logoDataUrl === undefined
+      ? logoUrl(form.logoVersion)
+      : (form.logoDataUrl ?? undefined);
+
   const onSave = async () => {
     if (saving) return;
     setSaving(true);
@@ -31,6 +39,9 @@ export default function SettingsPage() {
     const result = await saveCompany(form);
     setSaving(false);
     if (result.ok) {
+      // Adopt what the server stored, so the form drops its pending logo change
+      // and picks up the new version stamp.
+      if (result.company) setForm(result.company);
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
     } else {
@@ -72,9 +83,9 @@ export default function SettingsPage() {
           <div className="flex flex-col gap-5 sm:flex-row sm:items-start">
             <div className="flex flex-col items-center gap-3">
               <div className="flex h-24 w-24 items-center justify-center overflow-hidden rounded-2xl border border-black/10 bg-black/[0.03]">
-                {form.logoDataUrl ? (
+                {preview ? (
                   // eslint-disable-next-line @next/next/no-img-element
-                  <img src={form.logoDataUrl} alt="logo" className="h-full w-full object-cover" />
+                  <img src={preview} alt="" className="h-full w-full object-cover" />
                 ) : (
                   <span className="text-[11px] text-fg-dim">No logo</span>
                 )}
@@ -86,9 +97,10 @@ export default function SettingsPage() {
                 >
                   Upload
                 </button>
-                {form.logoDataUrl && (
+                {preview && (
                   <button
-                    onClick={() => set({ logoDataUrl: undefined })}
+                    // null, not undefined: undefined means "leave it alone".
+                    onClick={() => set({ logoDataUrl: null })}
                     className="rounded-lg border border-black/10 bg-black/5 px-3 py-1.5 text-xs text-fg-dim transition hover:text-[#f43f6e]"
                   >
                     Remove

@@ -67,7 +67,20 @@ export type Company = {
   taxId: string;
   currency: string;
   accent: string;
-  logoDataUrl?: string;
+  /**
+   * Opaque stamp identifying the stored logo, or absent when there is none.
+   * The bytes themselves are never carried in the snapshot — they are fetched
+   * once from `/api/logo?v=<logoVersion>` and cached by the browser.
+   */
+  logoVersion?: string;
+  /**
+   * A *pending* logo change, set only by the settings form: a data URL to
+   * store, or `null` to remove the current logo. The server never populates
+   * it, and leaving it `undefined` means "leave the logo as it is" — which is
+   * what keeps an ordinary profile save from wiping a logo the client is not
+   * holding.
+   */
+  logoDataUrl?: string | null;
 };
 
 /** The full workspace as loaded from the database and held by the client store. */

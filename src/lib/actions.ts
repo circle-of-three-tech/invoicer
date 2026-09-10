@@ -1,5 +1,6 @@
 "use server";
 
+import { createHash, randomUUID } from "node:crypto";
 import { Prisma } from "@prisma/client";
 import { prisma } from "./db";
 import { allowDemoData } from "./env";
@@ -7,6 +8,7 @@ import { loadSnapshot, type Snapshot } from "./data";
 import { sendDocumentEmail } from "./email";
 import { nextNumber, numberPrefix } from "./format";
 import {
+  COMPANY_FIELDS,
   COMPANY_ID,
   DEFAULT_COMPANY,
   invoiceScalarData,
@@ -17,7 +19,7 @@ import {
 import { rateLimit } from "./rate-limit";
 import { requireSession } from "./session";
 import { seedDemoData } from "./seed";
-import type { Invoice, Receipt } from "./types";
+import type { Company, Invoice, Receipt } from "./types";
 import {
   ValidationError,
   id as parseId,
@@ -101,11 +103,16 @@ export async function suggestInvoiceNumber(): Promise<ActionResult<string>> {
 /*  Company                                                                    */
 /* -------------------------------------------------------------------------- */
 
-export async function saveCompany(input: unknown): Promise<ActionResult> {
+/** An opaque, stable stamp for a logo's bytes — the cache key for /api/logo. */
+function logoVersionOf(dataUrl: string): string {
+  return createHash("sha256").update(dataUrl).digest("hex").slice(0, 32);
+}
+
+export async function saveCompany(input: unknown): Promise<ActionResult<Company>> {
   try {
     await requireSession();
     const company = parseCompany(input);
-    const data = {
+    const profile = {
       name: company.name,
       email: company.email,
       phone: company.phone,
@@ -113,14 +120,30 @@ export async function saveCompany(input: unknown): Promise<ActionResult> {
       taxId: company.taxId,
       currency: company.currency,
       accent: company.accent,
-      logoDataUrl: company.logoDataUrl ?? null,
     };
-    await prisma.company.upsert({
+
+    // `logoDataUrl` is tri-state: undefined leaves the stored logo untouched
+    // (the client does not hold the bytes, so it cannot round-trip them), null
+    // removes it, and a data URL replaces it.
+    const logo =
+      company.logoDataUrl === undefined
+        ? {}
+        : company.logoDataUrl === null
+          ? { logoDataUrl: null, logoVersion: null }
+          : {
+              logoDataUrl: company.logoDataUrl,
+              logoVersion: logoVersionOf(company.logoDataUrl),
+            };
+
+    const row = await prisma.company.upsert({
       where: { id: COMPANY_ID },
-      create: { id: COMPANY_ID, ...data },
-      update: data,
+      create: { id: COMPANY_ID, ...profile, ...logo },
+      update: { ...profile, ...logo },
+      select: COMPANY_FIELDS,
     });
-    return { ok: true };
+    // Handing the saved row back lets the store pick up the new `logoVersion`
+    // without reloading the whole workspace.
+    return { ok: true, data: mapCompany(row) };
   } catch (error) {
     return failure(error);
   }
@@ -222,7 +245,13 @@ export async function createReceipt(
     const inv = await prisma.invoice.findUnique({ where: { id: invoiceId } });
     if (!inv) return { ok: false, error: "That invoice no longer exists." };
 
-    const id = `RCPT-${Date.now().toString(36).toUpperCase()}`;
+    // Two payments recorded in the same millisecond would otherwise be handed
+    // the same id, and the resulting collision is on `id` rather than `number`
+    // — so the retry below would not catch it and the save would just fail.
+    const id = `RCPT-${Date.now().toString(36).toUpperCase()}-${randomUUID()
+      .replace(/-/g, "")
+      .slice(0, 8)
+      .toUpperCase()}`;
 
     // Recording a payment races the same way saving an invoice does: two
     // clients can read the same highest receipt number before either writes.
@@ -309,7 +338,10 @@ export async function sendInvoice(input: unknown): Promise<ActionResult> {
         where: { id: invoiceId },
         include: { items: { orderBy: { position: "asc" } } },
       }),
-      prisma.company.findUnique({ where: { id: COMPANY_ID } }),
+      prisma.company.findUnique({
+        where: { id: COMPANY_ID },
+        select: COMPANY_FIELDS,
+      }),
     ]);
     if (!row) return { ok: false, error: "Invoice not found." };
 
@@ -346,7 +378,10 @@ export async function sendReceipt(input: unknown): Promise<ActionResult> {
 
     const [row, companyRow] = await Promise.all([
       prisma.receipt.findUnique({ where: { id: receiptId } }),
-      prisma.company.findUnique({ where: { id: COMPANY_ID } }),
+      prisma.company.findUnique({
+        where: { id: COMPANY_ID },
+        select: COMPANY_FIELDS,
+      }),
     ]);
     if (!row) return { ok: false, error: "Receipt not found." };
 

@@ -142,9 +142,19 @@ function lineItem(value: unknown, index: number): LineItem {
   };
 }
 
-/** A data URL small enough to inline, and of a format we are happy to render. */
-function logoDataUrl(value: unknown): string | undefined {
-  if (value == null || value === "") return undefined;
+/**
+ * The logo is tri-state, because the client no longer holds the stored bytes:
+ *
+ * - `undefined` — no change requested; leave whatever is stored alone.
+ * - `null`      — remove the current logo.
+ * - a data URL  — replace it.
+ *
+ * Without that distinction, saving any other profile field would send
+ * `logoDataUrl: undefined` and silently erase the logo.
+ */
+function logoDataUrl(value: unknown): string | null | undefined {
+  if (value === undefined) return undefined;
+  if (value === null || value === "") return null;
   if (typeof value !== "string") throw new ValidationError("Logo must be a data URL.");
   // SVG is excluded deliberately — it is active content, unlike raster formats.
   if (!/^data:image\/(png|jpeg|webp|gif);base64,[A-Za-z0-9+/=]+$/.test(value)) {

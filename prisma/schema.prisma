@@ -19,7 +19,12 @@ model Company {
   taxId       String  @default("")
   currency    String  @default("USD")
   accent      String  @default("iris")
+
+  // The logo is a base64 data URL up to 256 KB. It is deliberately NOT part of
+  // the workspace snapshot: `logoVersion` (a content hash) travels instead, and
+  // the bytes are fetched once from GET /api/logo and cached by the browser.
   logoDataUrl String?
+  logoVersion String?
 }
 
 model Invoice {

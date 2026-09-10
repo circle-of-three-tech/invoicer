@@ -103,3 +103,12 @@ export function nextNumber(prefix: string, existing: string[]) {
   }, 0);
   return `${stem}${String(max + 1).padStart(4, "0")}`;
 }
+
+/**
+ * Where to fetch the business logo. The URL carries the content version, so the
+ * browser can cache the bytes indefinitely and still pick up a new upload the
+ * moment it is saved. Returns undefined when no logo is set.
+ */
+export function logoUrl(logoVersion?: string): string | undefined {
+  return logoVersion ? `/api/logo?v=${encodeURIComponent(logoVersion)}` : undefined;
+}

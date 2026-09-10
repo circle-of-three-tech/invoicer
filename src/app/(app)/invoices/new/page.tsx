@@ -258,7 +258,7 @@ function Builder() {
             </motion.span>
           </div>
           <div className="rounded-3xl border border-black/[0.06] bg-black/[0.015] p-4 sm:p-6">
-            <InvoiceDocument invoice={inv} logoDataUrl={company.logoDataUrl} />
+            <InvoiceDocument invoice={inv} logoVersion={company.logoVersion} />
           </div>
         </div>
       </div>

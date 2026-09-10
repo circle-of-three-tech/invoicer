@@ -24,7 +24,24 @@ export const DEFAULT_COMPANY: Company = {
 
 type DbInvoice = Prisma.InvoiceGetPayload<{ include: { items: true } }>;
 type DbReceipt = Prisma.ReceiptGetPayload<object>;
-type DbCompany = Prisma.CompanyGetPayload<object>;
+/**
+ * Everything about the company except the logo bytes. `loadSnapshot` selects
+ * exactly these columns, so a 256 KB data URL is neither read from Postgres nor
+ * serialised into the page on requests that only need the profile.
+ */
+export const COMPANY_FIELDS = {
+  id: true,
+  name: true,
+  email: true,
+  phone: true,
+  address: true,
+  taxId: true,
+  currency: true,
+  accent: true,
+  logoVersion: true,
+} as const;
+
+type DbCompany = Prisma.CompanyGetPayload<{ select: typeof COMPANY_FIELDS }>;
 
 export function mapCompany(row: DbCompany): Company {
   return {
@@ -35,7 +52,7 @@ export function mapCompany(row: DbCompany): Company {
     taxId: row.taxId,
     currency: row.currency,
     accent: row.accent,
-    logoDataUrl: row.logoDataUrl ?? undefined,
+    logoVersion: row.logoVersion ?? undefined,
   };
 }
 

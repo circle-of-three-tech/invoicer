@@ -3,14 +3,16 @@ import type { NextConfig } from "next";
 /**
  * Baseline security headers.
  *
- * The app renders user-supplied logos as `data:` images and inlines its own
- * styles, which the policy allows; everything else — plugins, framing, foreign
- * form targets — is denied outright.
+ * Content-Security-Policy is deliberately *not* here: it carries a per-request
+ * nonce and so is set in `src/proxy.ts`. Everything below is static, and
+ * applies to API responses too, which the proxy does not run on.
  */
 const securityHeaders = [
   { key: "X-Content-Type-Options", value: "nosniff" },
   { key: "X-Frame-Options", value: "DENY" },
   { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
+  // The metadata `robots` field only covers HTML; this covers every response.
+  { key: "X-Robots-Tag", value: "noindex, nofollow, noarchive" },
   {
     key: "Permissions-Policy",
     value: "camera=(), microphone=(), geolocation=(), interest-cohort=()",
@@ -18,23 +20,6 @@ const securityHeaders = [
   {
     key: "Strict-Transport-Security",
     value: "max-age=63072000; includeSubDomains; preload",
-  },
-  {
-    key: "Content-Security-Policy",
-    value: [
-      "default-src 'self'",
-      // Next.js injects inline bootstrap scripts; `unsafe-eval` is dev-only but
-      // harmless to keep off in production builds.
-      "script-src 'self' 'unsafe-inline'",
-      "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
-      "font-src 'self' https://fonts.gstatic.com data:",
-      "img-src 'self' data: blob:",
-      "connect-src 'self'",
-      "frame-ancestors 'none'",
-      "base-uri 'self'",
-      "form-action 'self'",
-      "object-src 'none'",
-    ].join("; "),
   },
 ];
 

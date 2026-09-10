@@ -106,16 +106,38 @@ npm run lint       # eslint
 3. Leave `ALLOW_DEMO_DATA` unset. With it on, the Settings page can wipe the database and
    reinstate sample invoices; with it off, the control is hidden *and* the action is refused
    server-side.
-4. Apply migrations with `npm run db:deploy` (baseline first — see above).
+4. Apply migrations with `npm run db:deploy` (baseline first — see above). The
+   `logoVersion` migration is additive and backfills existing logos, so it is safe to
+   apply to a live database.
 
 `GET /api/health` returns `200 {"status":"ok"}` when the app can reach Postgres and `503`
 when it cannot. It is deliberately public and reveals nothing else, so uptime monitors can
-poll it without a session.
+poll it without a session. The probe result is reused for a few seconds, which is
+invisible to a monitor and caps what an unauthenticated flood can cost.
+
+### Known limits
+
+- **The snapshot is unbounded.** The app shell loads every invoice (with its line items)
+  and every receipt on each request, because the dashboard totals, the list filters and
+  the client-side search all work across the whole workspace. That is fine at the
+  hundreds of documents a single business accumulates, and it is the reason pages have no
+  load waterfall — but it grows linearly. Past a few thousand invoices, page data should
+  move to a bounded query with the detail pages fetching their own document server-side.
+- **Rate limiting is per-instance.** `src/lib/rate-limit.ts` keeps its windows in memory,
+  so on a multi-instance deployment the effective login limit is the configured one times
+  the number of warm instances. It still blunts brute force; if the workspace is exposed
+  to real hostile traffic, move the windows to a shared store.
 
 ### What is hardened
 
-- Security headers, including a Content-Security-Policy, are set in
-  [next.config.ts](next.config.ts); `X-Powered-By` and browser source maps are off.
+- Static security headers are set in [next.config.ts](next.config.ts); `X-Powered-By`
+  and browser source maps are off. The Content-Security-Policy is set separately in
+  [src/proxy.ts](src/proxy.ts), because it carries a fresh per-request nonce: that is
+  what lets `script-src` drop `'unsafe-inline'`, which is the difference between a
+  policy that stops XSS and one that only looks like it does. Next.js stamps the nonce
+  onto its own script tags during the server render. `style-src` keeps `'unsafe-inline'`
+  deliberately — the UI uses inline `style` attributes for per-accent colours and Framer
+  Motion writes styles at runtime — and style injection is a far smaller risk.
 - Every action input is validated and clamped in [src/lib/validate.ts](src/lib/validate.ts) —
   lengths, numeric ranges, allowed currencies and accents, and a 256 KB cap on logo uploads
   (SVG rejected, since it is active content).
@@ -128,9 +150,32 @@ poll it without a session.
 - Document numbers are allocated per year and retried on conflict, so two tabs saving at once
   converge on distinct numbers instead of colliding.
 - The payment dialog traps focus, closes on Escape, and restores focus on exit.
+- `/api/health` caches its database probe for a few seconds. It is public, so without
+  that a flood of requests would become a flood of queries and exhaust the connection
+  pool that real traffic needs.
+- Receipt ids carry random bytes as well as a timestamp, so two payments recorded in the
+  same millisecond cannot collide.
+
+### The logo is not in the page payload
+
+The business logo is stored as a base64 data URL of up to 256 KB. Carrying it in the
+workspace snapshot meant those bytes were read from Postgres, inlined into the HTML *and*
+repeated in the RSC payload on **every** authenticated page load — on a document page,
+twice — and were never cacheable.
+
+Instead the snapshot carries only `logoVersion`, a content hash, and the bytes are served
+by [`GET /api/logo`](src/app/api/logo/route.ts) against a versioned URL with an `ETag` and
+`Cache-Control: private, max-age=31536000, immutable`. The browser fetches them once and
+revalidates to a `304`. With a 200 KB logo stored, an invoice page went from roughly
+440 KB to 29 KB plus a single cached image.
+
+Because the client no longer holds the bytes, `logoDataUrl` is tri-state on save:
+`undefined` leaves the stored logo alone, `null` removes it, and a data URL replaces it.
+Without that distinction, saving any other profile field would silently erase the logo.
 
 ## Structure
 
+- `src/app/api/` — `health` (public liveness probe), `logo` (cached logo bytes)
 - `src/lib/` — `types.ts`, `format.ts`, `accents.ts`, `env.ts` (validated config),
   `session.ts` / `session-token.ts` (auth), `rate-limit.ts`, `validate.ts` (input parsing),
   `db.ts` (Prisma client), `data.ts` (server-side reads), `mappers.ts` (row ↔ domain),
