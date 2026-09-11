@@ -59,6 +59,24 @@ export type Receipt = {
   sentAt?: string;
 };
 
+/** How a payment detail is presented — drives its icon and its label. */
+export type PaymentDetailKind = "bank" | "link" | "mobile" | "crypto" | "other";
+
+/**
+ * One way a client can pay: a bank account, a payment link, a wallet address.
+ * `details` is free-form multi-line text (account numbers, sort codes, memos)
+ * and `url` is an optional link rendered as a button on the invoice.
+ */
+export type PaymentDetail = {
+  id: string;
+  label: string;
+  kind: PaymentDetailKind;
+  details: string;
+  url: string;
+  /** Off keeps a method on file without printing it on new documents. */
+  enabled: boolean;
+};
+
 export type Company = {
   name: string;
   email: string;
@@ -67,6 +85,8 @@ export type Company = {
   taxId: string;
   currency: string;
   accent: string;
+  /** Ordered payment methods shown on invoices and in invoice emails. */
+  paymentDetails: PaymentDetail[];
   /**
    * Opaque stamp identifying the stored logo, or absent when there is none.
    * The bytes themselves are never carried in the snapshot — they are fetched

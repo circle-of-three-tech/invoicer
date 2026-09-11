@@ -5,9 +5,10 @@ import { motion } from "framer-motion";
 import { useStore } from "@/lib/store";
 import { Field, inputCls } from "@/components/ui";
 import { Reveal } from "@/components/motion";
-import { CURRENCIES, logoUrl } from "@/lib/format";
+import { CURRENCIES, logoUrl, uid } from "@/lib/format";
 import { ACCENTS } from "@/lib/accents";
-import type { Company } from "@/lib/types";
+import { PAYMENT_KINDS, blankPaymentDetail, paymentKind } from "@/lib/payments";
+import type { Company, PaymentDetail } from "@/lib/types";
 
 const ALLOWED_LOGO_TYPES = ["image/png", "image/jpeg", "image/webp", "image/gif"];
 const MAX_LOGO_BYTES = 256 * 1024;
@@ -148,6 +149,11 @@ export default function SettingsPage() {
           </div>
         </div>
 
+        <PaymentDetailsCard
+          details={form.paymentDetails}
+          onChange={(paymentDetails) => set({ paymentDetails })}
+        />
+
         <div className="rounded-2xl border border-black/[0.07] p-6 glass">
           <h3 className="mb-1 font-display text-base font-semibold text-fg">Default accent</h3>
           <p className="mb-4 text-xs text-fg-dim">Used for new invoices and receipts.</p>
@@ -223,6 +229,163 @@ export default function SettingsPage() {
           </div>
         </div>
       </div>
+    </div>
+  );
+}
+
+/* -------------------------------------------------------------------------- */
+/*  Payment methods                                                            */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Edits the whole ordered list in place. The list lives in the settings form's
+ * state like every other field, so nothing is written until "Save changes" —
+ * which keeps one save atomic on the server.
+ */
+function PaymentDetailsCard({
+  details,
+  onChange,
+}: {
+  details: PaymentDetail[];
+  onChange: (details: PaymentDetail[]) => void;
+}) {
+  const patch = (id: string, changes: Partial<PaymentDetail>) =>
+    onChange(details.map((d) => (d.id === id ? { ...d, ...changes } : d)));
+
+  const move = (index: number, delta: number) => {
+    const target = index + delta;
+    if (target < 0 || target >= details.length) return;
+    const next = [...details];
+    [next[index], next[target]] = [next[target], next[index]];
+    onChange(next);
+  };
+
+  return (
+    <div className="rounded-2xl border border-black/[0.07] p-6 glass">
+      <div className="mb-1 flex items-start justify-between gap-4">
+        <div>
+          <h3 className="font-display text-base font-semibold text-fg">Payment details</h3>
+          <p className="mt-1 text-xs text-fg-dim">
+            Shown on every unpaid invoice and in invoice emails. Add as many as you
+            need — bank accounts, payment links, wallets.
+          </p>
+        </div>
+        <button
+          onClick={() => onChange([...details, blankPaymentDetail(uid())])}
+          className="shrink-0 rounded-lg border border-black/10 bg-black/5 px-3 py-1.5 text-xs font-medium text-fg transition hover:bg-black/10"
+        >
+          + Add method
+        </button>
+      </div>
+
+      {details.length === 0 ? (
+        <p className="mt-4 rounded-xl border border-dashed border-black/10 px-4 py-6 text-center text-xs text-fg-dim">
+          No payment methods yet. Invoices will show your notes only.
+        </p>
+      ) : (
+        <div className="mt-4 space-y-4">
+          {details.map((d, i) => {
+            const meta = paymentKind(d.kind);
+            return (
+              <div
+                key={d.id}
+                className={`rounded-xl border border-black/10 bg-black/[0.02] p-4 transition ${
+                  d.enabled ? "" : "opacity-60"
+                }`}
+              >
+                <div className="mb-3 flex items-center justify-between gap-2">
+                  <span className="text-[11px] font-medium uppercase tracking-wider text-fg-dim">
+                    Method {i + 1}
+                  </span>
+                  <div className="flex items-center gap-1">
+                    <button
+                      onClick={() => move(i, -1)}
+                      disabled={i === 0}
+                      aria-label="Move up"
+                      className="rounded-md px-2 py-1 text-xs text-fg-dim transition hover:bg-black/5 hover:text-fg disabled:opacity-30"
+                    >
+                      ↑
+                    </button>
+                    <button
+                      onClick={() => move(i, 1)}
+                      disabled={i === details.length - 1}
+                      aria-label="Move down"
+                      className="rounded-md px-2 py-1 text-xs text-fg-dim transition hover:bg-black/5 hover:text-fg disabled:opacity-30"
+                    >
+                      ↓
+                    </button>
+                    <label className="ml-2 flex cursor-pointer items-center gap-1.5 text-[11px] text-fg-muted">
+                      <input
+                        type="checkbox"
+                        checked={d.enabled}
+                        onChange={(e) => patch(d.id, { enabled: e.target.checked })}
+                        className="h-3.5 w-3.5 accent-iris"
+                      />
+                      Show on invoices
+                    </label>
+                    <button
+                      onClick={() => onChange(details.filter((x) => x.id !== d.id))}
+                      className="ml-1 rounded-md px-2 py-1 text-xs text-fg-dim transition hover:text-[#f43f6e]"
+                    >
+                      Remove
+                    </button>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                  <Field label="Label">
+                    <input
+                      className={inputCls}
+                      placeholder="e.g. GTBank — NGN"
+                      value={d.label}
+                      onChange={(e) => patch(d.id, { label: e.target.value })}
+                    />
+                  </Field>
+                  <Field label="Type">
+                    <select
+                      className={inputCls}
+                      value={d.kind}
+                      onChange={(e) =>
+                        patch(d.id, { kind: e.target.value as PaymentDetail["kind"] })
+                      }
+                    >
+                      {PAYMENT_KINDS.map((k) => (
+                        <option key={k.key} value={k.key} className="bg-bg-soft">
+                          {k.label}
+                        </option>
+                      ))}
+                    </select>
+                  </Field>
+                  <div className="sm:col-span-2">
+                    <Field label="Details" hint="One line each — printed as written.">
+                      <textarea
+                        rows={3}
+                        className={inputCls}
+                        placeholder={meta.placeholder}
+                        value={d.details}
+                        onChange={(e) => patch(d.id, { details: e.target.value })}
+                      />
+                    </Field>
+                  </div>
+                  <div className="sm:col-span-2">
+                    <Field
+                      label="Payment link"
+                      hint="Optional. Becomes a button on the invoice — must start with https://"
+                    >
+                      <input
+                        className={inputCls}
+                        placeholder="https://paystack.com/pay/your-page"
+                        value={d.url}
+                        onChange={(e) => patch(d.id, { url: e.target.value })}
+                      />
+                    </Field>
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }

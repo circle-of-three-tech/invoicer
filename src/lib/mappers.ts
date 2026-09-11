@@ -4,6 +4,8 @@ import type {
   Company,
   Invoice,
   InvoiceStatus,
+  PaymentDetail,
+  PaymentDetailKind,
   PaymentMethod,
   Receipt,
 } from "./types";
@@ -20,6 +22,22 @@ export const DEFAULT_COMPANY: Company = {
   taxId: "",
   currency: "USD",
   accent: "iris",
+  paymentDetails: [],
+};
+
+/**
+ * The same defaults as scalar columns. `DEFAULT_COMPANY` carries
+ * `paymentDetails`, which Prisma would reject in a `create` — a relation there
+ * needs nested-write syntax, not a plain array.
+ */
+export const DEFAULT_COMPANY_ROW = {
+  name: DEFAULT_COMPANY.name,
+  email: DEFAULT_COMPANY.email,
+  phone: DEFAULT_COMPANY.phone,
+  address: DEFAULT_COMPANY.address,
+  taxId: DEFAULT_COMPANY.taxId,
+  currency: DEFAULT_COMPANY.currency,
+  accent: DEFAULT_COMPANY.accent,
 };
 
 type DbInvoice = Prisma.InvoiceGetPayload<{ include: { items: true } }>;
@@ -39,6 +57,8 @@ export const COMPANY_FIELDS = {
   currency: true,
   accent: true,
   logoVersion: true,
+  // Ordered in SQL, so the mapper never has to sort.
+  paymentDetails: { orderBy: { position: "asc" } },
 } as const;
 
 type DbCompany = Prisma.CompanyGetPayload<{ select: typeof COMPANY_FIELDS }>;
@@ -52,7 +72,21 @@ export function mapCompany(row: DbCompany): Company {
     taxId: row.taxId,
     currency: row.currency,
     accent: row.accent,
+    paymentDetails: row.paymentDetails.map(mapPaymentDetail),
     logoVersion: row.logoVersion ?? undefined,
+  };
+}
+
+function mapPaymentDetail(
+  row: Prisma.PaymentDetailGetPayload<object>,
+): PaymentDetail {
+  return {
+    id: row.id,
+    label: row.label,
+    kind: row.kind as PaymentDetailKind,
+    details: row.details,
+    url: row.url,
+    enabled: row.enabled,
   };
 }
 

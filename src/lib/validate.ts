@@ -1,11 +1,13 @@
 import { ACCENTS } from "./accents";
 import { CURRENCIES } from "./format";
+import { PAYMENT_KIND_KEYS } from "./payments";
 import type {
   Company,
   Invoice,
   InvoiceStatus,
   LineItem,
   Party,
+  PaymentDetail,
   PaymentMethod,
   Receipt,
 } from "./types";
@@ -34,6 +36,9 @@ const LIMITS = {
   notes: 2_000,
   description: 500,
   items: 200,
+  url: 500,
+  paymentDetails: 20,
+  paymentText: 1_000,
   /** Logos are inlined into every document and email, so keep them small. */
   logoBytes: 256 * 1024,
 } as const;
@@ -93,6 +98,26 @@ function email(value: unknown, field: string): string {
     throw new ValidationError(`${field} must be a valid email address.`);
   }
   return candidate;
+}
+
+/**
+ * Payment links are rendered as clickable buttons on invoices and inside
+ * emails, so the scheme is restricted to http(s): `javascript:` and `data:`
+ * URLs would otherwise turn a settings field into stored XSS.
+ */
+function link(value: unknown, field: string): string {
+  const candidate = str(value, field, LIMITS.url);
+  if (!candidate) return "";
+  let parsed: URL;
+  try {
+    parsed = new URL(candidate);
+  } catch {
+    throw new ValidationError(`${field} must be a full URL, starting with https://`);
+  }
+  if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
+    throw new ValidationError(`${field} must be an http or https link.`);
+  }
+  return parsed.toString();
 }
 
 function oneOf<T extends string>(value: unknown, field: string, allowed: readonly T[]): T {
@@ -169,6 +194,41 @@ function logoDataUrl(value: unknown): string | null | undefined {
   return value;
 }
 
+function paymentDetail(value: unknown, index: number): PaymentDetail {
+  const raw = (value ?? {}) as Record<string, unknown>;
+  const position = `Payment method ${index + 1}`;
+  const detail: PaymentDetail = {
+    id: id(raw.id, `${position} id`),
+    label: str(raw.label, `${position} label`, LIMITS.shortText, { required: true }),
+    kind: oneOf(raw.kind, `${position} type`, PAYMENT_KIND_KEYS),
+    details: str(raw.details, `${position} details`, LIMITS.paymentText),
+    url: link(raw.url, `${position} link`),
+    enabled: raw.enabled !== false,
+  };
+  // A method with neither instructions nor a link prints as an empty box on
+  // the invoice, so reject it here rather than let it ship to a client.
+  if (!detail.details && !detail.url) {
+    throw new ValidationError(`${position} needs either details or a link.`);
+  }
+  return detail;
+}
+
+function paymentDetails(value: unknown): PaymentDetail[] {
+  if (value == null) return [];
+  if (!Array.isArray(value)) throw new ValidationError("Payment methods must be a list.");
+  if (value.length > LIMITS.paymentDetails) {
+    throw new ValidationError(
+      `You can save at most ${LIMITS.paymentDetails} payment methods.`,
+    );
+  }
+  const parsed = value.map(paymentDetail);
+  // Ids key the rows that get written, so a duplicate would silently drop one.
+  if (new Set(parsed.map((p) => p.id)).size !== parsed.length) {
+    throw new ValidationError("Payment methods must each have a unique id.");
+  }
+  return parsed;
+}
+
 export function parseCompany(input: unknown): Company {
   const raw = (input ?? {}) as Record<string, unknown>;
   return {
@@ -179,6 +239,7 @@ export function parseCompany(input: unknown): Company {
     taxId: str(raw.taxId, "Tax ID", LIMITS.shortText),
     currency: oneOf(raw.currency, "Currency", CURRENCY_CODES),
     accent: oneOf(raw.accent, "Accent", ACCENT_KEYS),
+    paymentDetails: paymentDetails(raw.paymentDetails),
     logoDataUrl: logoDataUrl(raw.logoDataUrl),
   };
 }

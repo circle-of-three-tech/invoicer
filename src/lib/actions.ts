@@ -135,12 +135,33 @@ export async function saveCompany(input: unknown): Promise<ActionResult<Company>
               logoVersion: logoVersionOf(company.logoDataUrl),
             };
 
-    const row = await prisma.company.upsert({
-      where: { id: COMPANY_ID },
-      create: { id: COMPANY_ID, ...profile, ...logo },
-      update: { ...profile, ...logo },
-      select: COMPANY_FIELDS,
-    });
+    // The payment methods are owned by the profile and are small in number, so
+    // replacing the set wholesale is the simplest correct edit — and doing it
+    // in the same transaction as the profile means a save is never half-applied.
+    const [, , , row] = await prisma.$transaction([
+      prisma.company.upsert({
+        where: { id: COMPANY_ID },
+        create: { id: COMPANY_ID, ...profile, ...logo },
+        update: { ...profile, ...logo },
+      }),
+      prisma.paymentDetail.deleteMany({ where: { companyId: COMPANY_ID } }),
+      prisma.paymentDetail.createMany({
+        data: company.paymentDetails.map((p, position) => ({
+          id: p.id,
+          companyId: COMPANY_ID,
+          label: p.label,
+          kind: p.kind,
+          details: p.details,
+          url: p.url,
+          enabled: p.enabled,
+          position,
+        })),
+      }),
+      prisma.company.findUniqueOrThrow({
+        where: { id: COMPANY_ID },
+        select: COMPANY_FIELDS,
+      }),
+    ]);
     // Handing the saved row back lets the store pick up the new `logoVersion`
     // without reloading the whole workspace.
     return { ok: true, data: mapCompany(row) };

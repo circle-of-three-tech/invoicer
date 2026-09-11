@@ -4,6 +4,7 @@ import type { Transporter } from "nodemailer";
 import type { Company, Invoice, Receipt } from "./types";
 import { smtpConfig } from "./env";
 import { formatDate, lineTotal, money, totals } from "./format";
+import { activePaymentDetails, paymentKind } from "./payments";
 import { isEmailAddress } from "./validate";
 
 /* -------------------------------------------------------------------------- */
@@ -86,6 +87,36 @@ function partyBlock(label: string, name: string, email: string, address: string)
   </div>`;
 }
 
+/**
+ * "How to pay", as a table rather than flex/grid — Outlook ignores both.
+ * Links are validated as http(s) on save, so they are safe to emit as hrefs.
+ */
+function paymentsHtml(company: Company, accentHex: string) {
+  const methods = activePaymentDetails(company);
+  if (methods.length === 0) return "";
+
+  const blocks = methods
+    .map((m) => {
+      const meta = paymentKind(m.kind);
+      return `<tr><td style="padding:12px 14px;background:#f7f8fa;border-radius:10px;">
+        <div style="font-size:13px;font-weight:600;color:#1f2430;">${esc(m.label || meta.label)}</div>
+        <div style="font-size:10px;text-transform:uppercase;letter-spacing:.06em;color:#9aa0ad;margin-top:2px;">${esc(meta.label)}</div>
+        ${m.details ? `<div style="font-size:12.5px;line-height:1.6;color:#5b6270;margin-top:6px;">${esc(m.details)}</div>` : ""}
+        ${
+          m.url
+            ? `<div style="margin-top:10px;"><a href="${esc(m.url)}" style="display:inline-block;background:${accentHex};color:#ffffff;text-decoration:none;font-size:12px;font-weight:600;padding:8px 14px;border-radius:8px;">${esc(meta.action)}</a></div>`
+            : ""
+        }
+      </td></tr><tr><td style="height:8px;"></td></tr>`;
+    })
+    .join("");
+
+  return `<div style="margin-top:24px;">
+    <div style="text-transform:uppercase;letter-spacing:.06em;font-size:10px;color:#9aa0ad;margin-bottom:8px;">How to pay</div>
+    <table style="width:100%;border-collapse:separate;border-spacing:0;">${blocks}</table>
+  </div>`;
+}
+
 function invoiceHtml(inv: Invoice, company: Company, accentHex: string) {
   const t = totals(inv);
   const rows = inv.items
@@ -142,6 +173,7 @@ function invoiceHtml(inv: Invoice, company: Company, accentHex: string) {
         ${totalRow("Total due", money(t.total, inv.currency), true)}
       </tfoot>
     </table>
+    ${inv.status === "paid" ? "" : paymentsHtml(company, accentHex)}
     ${inv.notes ? `<p style="margin-top:24px;font-size:13px;color:#5b6270;background:#f7f8fa;padding:14px;border-radius:10px;">${esc(inv.notes)}</p>` : ""}
     `,
     accentHex,

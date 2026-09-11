@@ -7,6 +7,7 @@ import { AnimatePresence, motion } from "framer-motion";
 import { useStore } from "@/lib/store";
 import type { Invoice, LineItem } from "@/lib/types";
 import { CURRENCIES, money, totals, uid } from "@/lib/format";
+import { activePaymentDetails } from "@/lib/payments";
 import { ACCENTS } from "@/lib/accents";
 import { Field, inputCls } from "@/components/ui";
 import { InvoiceDocument } from "@/components/documents";
@@ -258,7 +259,11 @@ function Builder() {
             </motion.span>
           </div>
           <div className="rounded-3xl border border-black/[0.06] bg-black/[0.015] p-4 sm:p-6">
-            <InvoiceDocument invoice={inv} logoVersion={company.logoVersion} />
+            <InvoiceDocument
+              invoice={inv}
+              logoVersion={company.logoVersion}
+              paymentDetails={activePaymentDetails(company)}
+            />
           </div>
         </div>
       </div>

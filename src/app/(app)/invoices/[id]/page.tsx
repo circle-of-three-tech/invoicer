@@ -9,6 +9,7 @@ import { InvoiceDocument } from "@/components/documents";
 import { StatusPill, Field, inputCls } from "@/components/ui";
 import { Modal } from "@/components/Modal";
 import { formatDate, money, todayISO, totals } from "@/lib/format";
+import { activePaymentDetails } from "@/lib/payments";
 import type { PaymentMethod } from "@/lib/types";
 
 const METHODS: PaymentMethod[] = [
@@ -155,7 +156,11 @@ export default function InvoiceDetail() {
         </div>
       )}
 
-      <InvoiceDocument invoice={inv} logoVersion={company.logoVersion} />
+      <InvoiceDocument
+        invoice={inv}
+        logoVersion={company.logoVersion}
+        paymentDetails={activePaymentDetails(company)}
+      />
 
       <AnimatePresence>
         {payOpen && (

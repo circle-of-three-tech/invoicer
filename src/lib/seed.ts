@@ -1,6 +1,6 @@
 import "server-only";
 import { prisma } from "./db";
-import { COMPANY_ID, DEFAULT_COMPANY } from "./mappers";
+import { COMPANY_ID, DEFAULT_COMPANY, DEFAULT_COMPANY_ROW } from "./mappers";
 
 /**
  * Sample data for demos and local development.
@@ -23,7 +23,31 @@ export async function seedDemoData(): Promise<void> {
 
   await prisma.company.upsert({
     where: { id: COMPANY_ID },
-    create: { id: COMPANY_ID, ...DEFAULT_COMPANY, logoDataUrl: null },
+    create: {
+      id: COMPANY_ID,
+      ...DEFAULT_COMPANY_ROW,
+      logoDataUrl: null,
+      paymentDetails: {
+        create: [
+          {
+            id: "SEED-PAY-BANK",
+            label: "First National — USD",
+            kind: "bank",
+            details:
+              "Circle of Three Technologies\nAccount 0123456789\nRouting 021000021",
+            position: 0,
+          },
+          {
+            id: "SEED-PAY-LINK",
+            label: "Pay by card",
+            kind: "link",
+            details: "Visa, Mastercard and Amex accepted.",
+            url: "https://example.com/pay",
+            position: 1,
+          },
+        ],
+      },
+    },
     update: {},
   });
 
@@ -94,7 +118,7 @@ export async function seedDemoData(): Promise<void> {
 export async function ensureCompanyRow(): Promise<void> {
   await prisma.company.upsert({
     where: { id: COMPANY_ID },
-    create: { id: COMPANY_ID, ...DEFAULT_COMPANY, logoDataUrl: null },
+    create: { id: COMPANY_ID, ...DEFAULT_COMPANY_ROW, logoDataUrl: null },
     update: {},
   });
 }

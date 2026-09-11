@@ -1,9 +1,10 @@
 "use client";
 
 import { motion } from "framer-motion";
-import type { Company, Invoice, Receipt } from "@/lib/types";
+import type { Company, Invoice, PaymentDetail, Receipt } from "@/lib/types";
 import { formatDate, lineTotal, logoUrl, money, totals } from "@/lib/format";
 import { accent, accentGradient } from "@/lib/accents";
+import { paymentKind } from "@/lib/payments";
 
 function Triad({ color = "#7c5cff" }: { color?: string }) {
   return (
@@ -80,12 +81,70 @@ function PartyBlock({
   );
 }
 
+/** "How to pay" — the enabled payment methods, printed under the totals. */
+function PaymentDetailsBlock({
+  details,
+  color,
+}: {
+  details: PaymentDetail[];
+  color: string;
+}) {
+  return (
+    <div className="mt-8 rounded-xl border border-[#eceef4] p-4">
+      <div
+        className="mb-3 text-[10px] font-semibold uppercase tracking-wider"
+        style={{ color }}
+      >
+        How to pay
+      </div>
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+        {details.map((d) => {
+          const meta = paymentKind(d.kind);
+          return (
+            <div key={d.id} className="rounded-lg bg-[#f7f8fc] p-3">
+              <div className="text-[12.5px] font-semibold text-[#20222c]">
+                {d.label || meta.label}
+              </div>
+              <div className="text-[10px] uppercase tracking-wider text-[#a2a5b8]">
+                {meta.label}
+              </div>
+              {d.details && (
+                <div className="mt-1.5 whitespace-pre-line text-[12px] leading-relaxed text-[#5a5d70]">
+                  {d.details}
+                </div>
+              )}
+              {d.url && (
+                <a
+                  href={d.url}
+                  target="_blank"
+                  rel="noreferrer noopener"
+                  className="mt-2 inline-block break-all rounded-lg px-3 py-1.5 text-[11.5px] font-semibold text-white"
+                  style={{ background: color }}
+                >
+                  {meta.action} →
+                </a>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 export function InvoiceDocument({
   invoice,
   logoVersion,
+  paymentDetails = [],
 }: {
   invoice: Invoice;
   logoVersion?: string;
+  /**
+   * The company's enabled payment methods. They live on the profile rather
+   * than on the invoice, so a settings change is reflected on every unpaid
+   * invoice at once — and a paid one stops asking for money.
+   */
+  paymentDetails?: PaymentDetail[];
 }) {
   const logo = logoUrl(logoVersion);
   const a = accent(invoice.accent);
@@ -199,6 +258,10 @@ export function InvoiceDocument({
           </div>
         </div>
       </div>
+
+      {!paid && paymentDetails.length > 0 && (
+        <PaymentDetailsBlock details={paymentDetails} color={a.solid} />
+      )}
 
       {invoice.notes && (
         <div className="mt-8 rounded-xl bg-[#f7f8fc] p-4">

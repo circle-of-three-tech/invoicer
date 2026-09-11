@@ -25,6 +25,26 @@ model Company {
   // the bytes are fetched once from GET /api/logo and cached by the browser.
   logoDataUrl String?
   logoVersion String?
+
+  // How clients are told to pay. Ordered, and owned by the profile, so the
+  // whole set is replaced in one transaction when Settings is saved.
+  paymentDetails PaymentDetail[]
+}
+
+/// A single way to be paid — a bank account, a payment link, a wallet.
+model PaymentDetail {
+  id        String  @id
+  companyId String
+  label     String
+  kind      String  @default("other") // bank | link | mobile | crypto | other
+  details   String  @default("")
+  url       String  @default("")
+  enabled   Boolean @default(true)
+  position  Int     @default(0)
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  @@index([companyId, position])
 }
 
 model Invoice {
